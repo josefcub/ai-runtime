@@ -24,13 +24,36 @@ func ResolveWorkingDir(dir string) (string, error) {
 	return resolved, nil
 }
 
+// SanitizeFilename replaces filesystem-unsafe characters so the result can be
+// used safely as a filename across platforms (Linux, macOS, Windows). Replacements:
+//   - null byte (\x00) — Go string / filesystem bypass
+//   - path separators (/ \) — path traversal
+//   - parent directory (..) — path traversal
+//   - Windows reserved (* ? " < > |) — invalid filenames on Windows
+func SanitizeFilename(name string) string {
+	s := strings.ReplaceAll(name, "\x00", "_")
+	s = strings.ReplaceAll(s, "/", "_")
+	s = strings.ReplaceAll(s, "\\", "_")
+	s = strings.ReplaceAll(s, "..", "_")
+	s = strings.ReplaceAll(s, "*", "_")
+	s = strings.ReplaceAll(s, "?", "_")
+	s = strings.ReplaceAll(s, "<", "_")
+	s = strings.ReplaceAll(s, ">", "_")
+	s = strings.ReplaceAll(s, "|", "_")
+	s = strings.ReplaceAll(s, ":", "_")
+	s = strings.ReplaceAll(s, "\"", "_")
+	s = strings.ReplaceAll(s, "'", "_")
+
+	return s
+}
+
 // ResolvePath validates a requested path against the sandbox working directory.
 // It enforces the five-step process from SYSTEM.md §8.2:
-//   1. Reject absolute paths
-//   2. Join + absolute
-//   3. Resolve symlinks (fallback if file doesn't exist yet)
-//   4. Normalize workingDir with Abs (not EvalSymlinks)
-//   5. Prefix check with separator
+//  1. Reject absolute paths
+//  2. Join + absolute
+//  3. Resolve symlinks (fallback if file doesn't exist yet)
+//  4. Normalize workingDir with Abs (not EvalSymlinks)
+//  5. Prefix check with separator
 //
 // Returns the resolved safe path, or an error if the path escapes the sandbox.
 func ResolvePath(workingDir, reqPath string) (string, error) {

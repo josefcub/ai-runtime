@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/agent-project/harness/sandbox"
 )
 
 func tmpDir(t *testing.T) string {
@@ -513,15 +515,15 @@ func TestSanitizeChannelID(t *testing.T) {
 		{"foo\\bar\\baz", "foo_bar_baz"},             // backslashes
 		{"a*b?c\"d<e>f|g", "a_b_c_d_e_f_g"},         // Windows reserved
 		{"a/b/c", "a_b_c"},                           // nested slashes
-		{"../escape", ".._escape"},                  // parent traversal — / removed so .. is harmless
+		{"../escape", "__escape"},                // parent traversal — .. and / both replaced
 		{"foo\x00bar", "foo_bar"},                    // null byte
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			result := sanitizeChannelID(tt.input)
+			result := sandbox.SanitizeFilename(tt.input)
 			if result != tt.expected {
-				t.Errorf("sanitizeChannelID(%q) = %q, want %q", tt.input, result, tt.expected)
+				t.Errorf("SanitizeFilename(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
 	}

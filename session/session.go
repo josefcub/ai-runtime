@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/agent-project/harness/sandbox"
 )
 
 // MessageRole is the role of a message in the conversation.
@@ -101,24 +103,6 @@ func (m *Manager) LoadAll() error {
 	return nil
 }
 
-// sanitizeChannelID replaces filesystem-unsafe characters in a channel ID
-// so it can be used safely as a filename. The characters replaced are
-// path separators (/ \), Windows reserved names (* ? " < > |), and the
-// null byte. Colons are preserved as they are common in channel ID schemes
-// (e.g. "slack:abc123") and are valid on Linux/macOS.
-func sanitizeChannelID(id string) string {
-	s := strings.ReplaceAll(id, "/", "_")
-	s = strings.ReplaceAll(s, "\\", "_")
-	s = strings.ReplaceAll(s, "*", "_")
-	s = strings.ReplaceAll(s, "?", "_")
-	s = strings.ReplaceAll(s, "\"", "_")
-	s = strings.ReplaceAll(s, "<", "_")
-	s = strings.ReplaceAll(s, ">", "_")
-	s = strings.ReplaceAll(s, "|", "_")
-	s = strings.ReplaceAll(s, "\x00", "_")
-	return s
-}
-
 // Get returns the session for the given channel, creating a new one if it doesn't exist.
 // Returns nil if the channel ID contains a null byte (rejected for safety).
 func (m *Manager) Get(channelID string) *Session {
@@ -155,7 +139,7 @@ func (m *Manager) saveFile(s *Session) error {
 		return fmt.Errorf("create state dir: %w", err)
 	}
 
-	safeName := sanitizeChannelID(s.ChannelID)
+	safeName := sandbox.SanitizeFilename(s.ChannelID)
 	tmpPath := filepath.Join(m.stateDir, safeName+".json.tmp")
 	finalPath := filepath.Join(m.stateDir, safeName+".json")
 
@@ -238,7 +222,7 @@ func (m *Manager) DrainAndSave(channelID, messageText string) error {
 		return fmt.Errorf("create state dir: %w", err)
 	}
 
-	safeName := sanitizeChannelID(channelID)
+	safeName := sandbox.SanitizeFilename(channelID)
 	tmpPath := filepath.Join(m.stateDir, safeName+".json.tmp")
 	finalPath := filepath.Join(m.stateDir, safeName+".json")
 

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/agent-project/harness/sandbox"
 )
 
 // Logger writes per-channel JSONL conversation logs to a configurable directory.
@@ -49,9 +51,7 @@ func (l *Logger) Log(channelID string, entry Entry) error {
 	}
 
 	// Sanitize channel ID for use as filename
-	safeID := strings.ReplaceAll(channelID, "/", "_")
-	safeID = strings.ReplaceAll(safeID, "\\", "_")
-	safeID = strings.ReplaceAll(safeID, "..", "_")
+	safeID := sandbox.SanitizeFilename(channelID)
 	logPath := filepath.Join(l.dir, safeID+".log")
 
 	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
