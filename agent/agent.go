@@ -20,17 +20,17 @@ type ChatClient interface {
 
 // Agent processes messages through the LLM with tool-call support.
 type Agent struct {
-	client               ChatClient
-	tools                *tools.Registry
-	maxToolIterations    int
-	contextTokens        int
-	summarizeThreshold   float64
-	summarizeKeepRecent  int
-	maxTokens            int
-	summaryPrompt        string
-	logToolCalls         bool
-	logAgentReasoning    bool
-	channelLogger        *channellog.Logger
+	client              ChatClient
+	tools               *tools.Registry
+	maxToolIterations   int
+	contextTokens       int
+	summarizeThreshold  float64
+	summarizeKeepRecent int
+	maxTokens           int
+	summaryPrompt       string
+	logToolCalls        bool
+	logAgentReasoning   bool
+	channelLogger       *channellog.Logger
 }
 
 // New creates a new Agent.
@@ -226,9 +226,9 @@ func (a *Agent) summarizeContext(ctx context.Context, sess *session.Session) err
 		"keep_recent", fmt.Sprintf("%d", a.summarizeKeepRecent),
 	)
 	_ = a.channelLogger.Log(sess.ChannelID, channellog.Entry{
-		Role:   "system",
-		Action: "tool",
-		Tool:   "session_summary",
+		Role:    "system",
+		Action:  "tool",
+		Tool:    "session_summary",
 		Message: "Context summarization started",
 	})
 
@@ -261,9 +261,9 @@ func (a *Agent) summarizeContext(ctx context.Context, sess *session.Session) err
 		errMsg := fmt.Sprintf("context summarization failed: %v", err)
 		logger.Error(errMsg)
 		_ = a.channelLogger.Log(sess.ChannelID, channellog.Entry{
-			Role:   "system",
-			Action: "tool",
-			Tool:   "session_summary",
+			Role:    "system",
+			Action:  "tool",
+			Tool:    "session_summary",
 			Message: errMsg,
 		})
 		// Record the failure in session state as a tool message
@@ -282,9 +282,9 @@ func (a *Agent) summarizeContext(ctx context.Context, sess *session.Session) err
 		errMsg := "context summarization failed: LLM returned empty summary"
 		logger.Error(errMsg)
 		_ = a.channelLogger.Log(sess.ChannelID, channellog.Entry{
-			Role:   "system",
-			Action: "tool",
-			Tool:   "session_summary",
+			Role:    "system",
+			Action:  "tool",
+			Tool:    "session_summary",
 			Message: errMsg,
 		})
 		sess.Messages = append(sess.Messages, session.ConversationMessage{
@@ -310,9 +310,9 @@ func (a *Agent) summarizeContext(ctx context.Context, sess *session.Session) err
 		"summary_tokens", fmt.Sprintf("%d", summaryTokens),
 	)
 	_ = a.channelLogger.Log(sess.ChannelID, channellog.Entry{
-		Role:   "system",
-		Action: "tool",
-		Tool:   "session_summary",
+		Role:    "system",
+		Action:  "tool",
+		Tool:    "session_summary",
 		Message: fmt.Sprintf("Context summarization complete. Summarized %d messages, kept %d recent.", len(old), len(recent)),
 	})
 
@@ -321,14 +321,14 @@ func (a *Agent) summarizeContext(ctx context.Context, sess *session.Session) err
 
 // totalTokens estimates the total tokens in the system prompt plus all session messages.
 func (a *Agent) totalTokens(sess *session.Session, systemPrompt string) int {
-	total := len(systemPrompt) / 4
+	total := len(systemPrompt) / 3
 	for _, msg := range sess.Messages {
-		total += len(msg.Content) / 4
+		total += len(msg.Content) / 3
 		for _, tc := range msg.ToolCalls {
-			total += len(tc.Function.Name) / 4
-			total += len(tc.Function.Arguments) / 4
+			total += len(tc.Function.Name) / 2
+			total += len(tc.Function.Arguments) / 2
 		}
-		total += len(msg.ToolCallID) / 4
+		total += len(msg.ToolCallID) / 2
 	}
 	return total
 }
