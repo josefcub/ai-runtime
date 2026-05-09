@@ -18,9 +18,10 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host        string
-	Port        int
-	WebhookPath string
+	Host         string
+	Port         int
+	WebhookPath  string
+	MaxBodyBytes int
 }
 
 type LLMConfig struct {
@@ -75,6 +76,7 @@ func Load(path string) (*Config, error) {
 	cfg.Server.Host = strDefault(data, "server", "host", "127.0.0.1")
 	cfg.Server.Port = intDefault(data, "server", "port", 8080)
 	cfg.Server.WebhookPath = strDefault(data, "server", "webhook_path", "/webhook")
+	cfg.Server.MaxBodyBytes = intDefault(data, "server", "max_body_bytes", 1048576)
 
 	// LLM section
 	cfg.LLM.Endpoint = strDefault(data, "llm", "endpoint", "")
@@ -145,6 +147,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.Port <= 0 || c.Server.Port > 65535 {
 		errors = append(errors, "server.port must be between 1 and 65535")
+	}
+	if c.Server.MaxBodyBytes <= 0 {
+		errors = append(errors, "server.max_body_bytes must be positive")
 	}
 
 	// Validate log level

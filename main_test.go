@@ -110,7 +110,7 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ws := webhook.NewServer("127.0.0.1", 0, "/webhook", q, sessions, true)
+	ws := webhook.NewServer("127.0.0.1", 0, "/webhook", 1048576, q, sessions, true)
 
 	go func() {
 		_ = ws.Start(ctx)
@@ -713,7 +713,7 @@ func TestIntegration_Webhook503OnShutdown(t *testing.T) {
 	q := queue.New(10)
 	sessions := session.NewManager(filepath.Join(dir, "state"))
 
-	ws := webhook.NewServer("127.0.0.1", 0, "/webhook", q, sessions, false)
+	ws := webhook.NewServer("127.0.0.1", 0, "/webhook", 1048576, q, sessions, false)
 
 	// Test that calling Stop() sets the shutting flag and returns nil
 	if err := ws.Stop(); err != nil {

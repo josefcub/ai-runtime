@@ -22,7 +22,7 @@ The Agent Harness is a minimal autonomous agent system written in Go (stdlib onl
 
 ## 2. Message Lifecycle
 
-1. **Inbound**: `POST /webhook` with `{channel, message, callback_url?}` → validated → enqueued
+1. **Inbound**: `POST /webhook` with `{channel, message, callback_url?}` → validated (JSON, required fields, `callback_url` must be http/https, channel ID ≤ 254 chars, body ≤ `server.max_body_bytes` default 1MB) → enqueued
 2. **Dequeue**: Worker polls queue, pops oldest message
 3. **Process**: Agent runs tool-call loop, appends user message to session, iterates up to `max_tool_iterations`
 4. **Save**: Session saved atomically after processing completes (also saved on error to persist the user message)
@@ -106,3 +106,24 @@ A standalone CLI client (`client/client.go`) sends messages to the harness webho
 - `-t` — show reasoning and tool calls in output
 
 **Source**: `client/client.go`
+
+---
+
+## 9. Webhook Input Validation
+
+The webhook handler (`webhook/server.go`) validates all inbound requests:
+
+| Check | Status Code | Response |
+|---|---|---|
+| Non-POST method | 405 | (empty) |
+| Shutting down | 503 | `service unavailable` |
+| Malformed JSON / body exceeds `max_body_bytes` | 400 | `invalid JSON` |
+| Missing `channel` | 400 | `missing channel` |
+| Channel ID > 254 chars | 400 | `channel ID too long` |
+| Missing `message` | 400 | `missing message` |
+| Invalid `callback_url` (non-http/https scheme) | 400 | `invalid callback_url (must be http or https)` |
+| Queue full (per-channel) | 429 | rejection message + optional callback |
+
+**Config**: `server.max_body_bytes` (optional, default `1048576` = 1MB). Applied via `http.MaxBytesReader`.
+
+**Source**: `webhook/server.go:83-138` `handleWebhook()`

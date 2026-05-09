@@ -6,6 +6,7 @@
 host = 127.0.0.1                               # Default 127.0.0.1
 port = 8080                                    # Default 8080
 webhook_path = "/webhook"                      # Default "/webhook"
+max_body_bytes = 1048576                       # Max request body size in bytes, default is 1048576 (1MB)
 
 [llm]
 # OpenAI-compatible API (llama-server, etc.)

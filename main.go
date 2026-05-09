@@ -97,6 +97,7 @@ func main() {
 		cfg.Server.Host,
 		cfg.Server.Port,
 		cfg.Server.WebhookPath,
+		cfg.Server.MaxBodyBytes,
 		q,
 		sessions,
 		cfg.Logging.LogChannelEvents,

@@ -23,7 +23,7 @@ func newTestServer(t *testing.T, maxDepth int) (*Server, *queue.Queue, *session.
 	q := queue.New(maxDepth)
 	sess := session.NewManager(stateDir)
 
-	srv := NewServer("127.0.0.1", 0, "/webhook", q, sess, true)
+	srv := NewServer("127.0.0.1", 0, "/webhook", 1048576, q, sess, true)
 
 	// Create a test HTTP server wrapping the webhook handler
 	h := http.NewServeMux()
@@ -396,5 +396,146 @@ func TestWebhook_DifferentChannelsNoBackpressure(t *testing.T) {
 
 	if q.Len() != 3 {
 		t.Errorf("queue len = %d, want 3", q.Len())
+	}
+}
+
+func TestWebhook_InvalidCallbackURL(t *testing.T) {
+	_, _, _, ts := newTestServer(t, 64)
+
+	testCases := []struct {
+		name        string
+		callbackURL string
+	}{
+		{"empty_scheme", "://not-a-url"},
+		{"file_scheme", "file:///etc/passwd"},
+		{"gopher_scheme", "gopher://example.com"},
+		{"javascript_scheme", "javascript:alert(1)"},
+		{"not_a_url", "not-a-url"},
+		{"ftp_scheme", "ftp://example.com/file"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := map[string]string{
+				"channel":      "test-ch",
+				"message":      "test",
+				"callback_url": tc.callbackURL,
+			}
+			body, _ := json.Marshal(payload)
+
+			resp, err := http.Post(ts.URL+"/webhook", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("post: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want %d for callback_url %q", resp.StatusCode, http.StatusBadRequest, tc.callbackURL)
+			}
+		})
+	}
+}
+
+func TestWebhook_ValidCallbackURLSchemes(t *testing.T) {
+	_, _, _, ts := newTestServer(t, 64)
+
+	for _, scheme := range []string{"http", "https"} {
+		t.Run(scheme, func(t *testing.T) {
+			payload := map[string]string{
+				"channel":      "test-ch",
+				"message":      "test",
+				"callback_url": scheme + "://example.com/callback",
+			}
+			body, _ := json.Marshal(payload)
+
+			resp, err := http.Post(ts.URL+"/webhook", "application/json", bytes.NewReader(body))
+			if err != nil {
+				t.Fatalf("post: %v", err)
+			}
+			defer resp.Body.Close()
+
+			// May be 202 or 429 (backpressure) — not 400
+			if resp.StatusCode == http.StatusBadRequest {
+				t.Errorf("status = 400, valid %s URL should not be rejected", scheme)
+			}
+		})
+	}
+}
+
+func TestWebhook_ChannelIDTooLong(t *testing.T) {
+	_, _, _, ts := newTestServer(t, 64)
+
+	// 255 chars — exceeds the 254 limit
+	longChannel := strings.Repeat("a", 255)
+	payload := map[string]string{
+		"channel": longChannel,
+		"message": "test",
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(ts.URL+"/webhook", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestWebhook_ChannelIDAtLimit(t *testing.T) {
+	_, _, _, ts := newTestServer(t, 64)
+
+	// Exactly 254 chars — should be accepted
+	exactChannel := strings.Repeat("a", 254)
+	payload := map[string]string{
+		"channel": exactChannel,
+		"message": "test",
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(ts.URL+"/webhook", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Should be 202 Accepted (or 429 if backpressured, but not 400)
+	if resp.StatusCode == http.StatusBadRequest {
+		t.Errorf("status = 400, 254-char channel ID should be accepted")
+	}
+}
+
+func TestWebhook_BodyTooLarge(t *testing.T) {
+	stateDir := filepath.Join(t.TempDir(), "state")
+	q := queue.New(64)
+	sess := session.NewManager(stateDir)
+
+	// Create server with 100-byte limit
+	srv := NewServer("127.0.0.1", 0, "/webhook", 100, q, sess, true)
+
+	h := http.NewServeMux()
+	h.HandleFunc("/webhook", srv.handleWebhook)
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	// Build a payload that exceeds 100 bytes
+	payload := map[string]string{
+		"channel": "test-ch",
+		"message": strings.Repeat("x", 200), // body will be > 100 bytes
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(ts.URL+"/webhook", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// MaxBytesReader causes the JSON decoder to return an error,
+	// which we treat as "invalid JSON" (400)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
 	}
 }

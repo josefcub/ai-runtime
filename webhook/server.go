@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"sync/atomic"
 	"time"
 
@@ -16,26 +17,28 @@ import (
 
 // Server handles inbound webhook HTTP requests.
 type Server struct {
-	host        string
-	port        int
-	webhookPath string
-	q           *queue.Queue
-	sessions    *session.Manager
-	logEvents   bool
+	host         string
+	port         int
+	webhookPath  string
+	maxBodyBytes int
+	q            *queue.Queue
+	sessions     *session.Manager
+	logEvents    bool
 
 	server   *http.Server
 	shutting atomic.Bool
 }
 
 // NewServer creates a new webhook HTTP server.
-func NewServer(host string, port int, webhookPath string, q *queue.Queue, sessions *session.Manager, logChannelEvents bool) *Server {
+func NewServer(host string, port int, webhookPath string, maxBodyBytes int, q *queue.Queue, sessions *session.Manager, logChannelEvents bool) *Server {
 	return &Server{
-		host:        host,
-		port:        port,
-		webhookPath: webhookPath,
-		q:           q,
-		sessions:    sessions,
-		logEvents:   logChannelEvents,
+		host:         host,
+		port:         port,
+		webhookPath:  webhookPath,
+		maxBodyBytes: maxBodyBytes,
+		q:            q,
+		sessions:     sessions,
+		logEvents:    logChannelEvents,
 	}
 }
 
@@ -95,6 +98,9 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Limit request body size
+	r.Body = http.MaxBytesReader(w, r.Body, int64(s.maxBodyBytes))
+
 	var body struct {
 		Channel     string `json:"channel"`
 		Message     string `json:"message"`
@@ -113,10 +119,25 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if len(body.Channel) > 254 {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("channel ID too long"))
+		return
+	}
+
 	if body.Message == "" {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("missing message"))
 		return
+	}
+
+	if body.CallbackURL != "" {
+		parsedURL, parseErr := url.Parse(body.CallbackURL)
+		if parseErr != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("invalid callback_url (must be http or https)"))
+			return
+		}
 	}
 
 	// Ensure session exists for this channel (creates if new)

@@ -493,3 +493,70 @@ summarize_keep_recent = -1
 		t.Errorf("expected summarize_keep_recent in error, got: %v", err)
 	}
 }
+
+func TestLoadMaxBodyBytes(t *testing.T) {
+	content := `
+[llm]
+endpoint = "http://localhost:8080/v1"
+model = "test"
+
+[server]
+max_body_bytes = 2097152
+`
+	path := writeTestINI(t, content)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected load error: %v", err)
+	}
+
+	if cfg.Server.MaxBodyBytes != 2097152 {
+		t.Errorf("max_body_bytes = %d, want 2097152", cfg.Server.MaxBodyBytes)
+	}
+
+	err = cfg.Validate()
+	if err != nil {
+		t.Fatalf("expected valid config, got: %v", err)
+	}
+}
+
+func TestLoadMaxBodyBytesDefault(t *testing.T) {
+	content := `
+[llm]
+endpoint = "http://localhost:8080/v1"
+model = "test"
+`
+	path := writeTestINI(t, content)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected load error: %v", err)
+	}
+
+	// Default should be 1MB
+	if cfg.Server.MaxBodyBytes != 1048576 {
+		t.Errorf("max_body_bytes should default to 1048576, got %d", cfg.Server.MaxBodyBytes)
+	}
+}
+
+func TestValidateNegativeMaxBodyBytes(t *testing.T) {
+	content := `
+[llm]
+endpoint = "http://localhost:8080/v1"
+model = "test"
+
+[server]
+max_body_bytes = -1
+`
+	path := writeTestINI(t, content)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected load error: %v", err)
+	}
+
+	err = cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation error for negative max_body_bytes")
+	}
+	if !strings.Contains(err.Error(), "max_body_bytes") {
+		t.Errorf("expected max_body_bytes in error, got: %v", err)
+	}
+}
