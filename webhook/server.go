@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync/atomic"
+	"time"
 
 	"github.com/agent-project/harness/log"
 	"github.com/agent-project/harness/queue"
@@ -128,7 +129,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 
 	msg := queue.Message{
 		ChannelID:   body.Channel,
-		MessageText: body.Message,
+		MessageText: fmt.Sprintf("[%s] [#%s] %s", time.Now().Format("01/02/2006 15:04:05"), body.Channel, body.Message),
 		CallbackURL: body.CallbackURL,
 	}
 

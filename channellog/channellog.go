@@ -61,7 +61,7 @@ func (l *Logger) Log(channelID string, entry Entry) error {
 
 	// Use the provided timestamp if set, otherwise current time
 	if entry.Timestamp == "" {
-		entry.Timestamp = time.Now().UTC().Format(time.RFC3339)
+		entry.Timestamp = time.Now().Format(time.RFC3339)
 	}
 
 	// Marshal to JSON — encoding/json handles all escaping (newlines, quotes, etc.)

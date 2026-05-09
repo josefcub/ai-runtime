@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -65,8 +66,9 @@ func TestWebhook_ValidPayload(t *testing.T) {
 	if msg.ChannelID != "slack:abc123" {
 		t.Errorf("channel = %q, want %q", msg.ChannelID, "slack:abc123")
 	}
-	if msg.MessageText != "hello world" {
-		t.Errorf("message = %q, want %q", msg.MessageText, "hello world")
+	// MessageText is prefixed with "[timestamp] [#channel] "
+	if !strings.HasPrefix(msg.MessageText, "[") || !strings.Contains(msg.MessageText, "#slack:abc123") || !strings.HasSuffix(msg.MessageText, "hello world") {
+		t.Errorf("message = %q, want prefixed message containing channel and original text", msg.MessageText)
 	}
 	if msg.CallbackURL != "http://example.com/callback" {
 		t.Errorf("callback_url = %q, want %q", msg.CallbackURL, "http://example.com/callback")

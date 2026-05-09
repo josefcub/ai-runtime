@@ -41,7 +41,7 @@ func (q *Queue) Enqueue(msg Message) (string, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	msg.ArrivalTime = time.Now().UTC()
+	msg.ArrivalTime = time.Now()
 
 	if q.depth[msg.ChannelID] >= q.maxDepth {
 		log.GetGlobal().Warn("queue full — message rejected",

@@ -103,7 +103,7 @@ func (l *Logger) Log(level Level, msg string, kvs ...string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	ts := time.Now().UTC().Format(time.RFC3339)
+	ts := time.Now().Format(time.RFC3339)
 	fmt.Fprintf(l.file, "%s level=%s msg=%q", ts, level.String(), msg)
 
 	for i := 0; i+1 < len(kvs); i += 2 {

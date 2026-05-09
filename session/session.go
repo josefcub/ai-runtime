@@ -131,7 +131,7 @@ func (m *Manager) Get(channelID string) *Session {
 
 	s, ok := m.sessions[channelID]
 	if !ok {
-		now := time.Now().UTC()
+		now := time.Now()
 		s = &Session{
 			ChannelID: channelID,
 			Messages:  nil,
@@ -180,7 +180,7 @@ func (m *Manager) Save(s *Session) error {
 		return fmt.Errorf("session %s not found", s.ChannelID)
 	}
 	m.sessions[s.ChannelID] = s
-	s.UpdatedAt = time.Now().UTC()
+	s.UpdatedAt = time.Now()
 	m.mu.Unlock()
 
 	return m.saveFile(s)
@@ -196,7 +196,7 @@ func (m *Manager) SaveAll() error {
 	m.mu.Unlock()
 
 	for _, s := range snapshot {
-		s.UpdatedAt = time.Now().UTC()
+		s.UpdatedAt = time.Now()
 		if err := m.saveFile(s); err != nil {
 			return err
 		}
@@ -212,7 +212,7 @@ func (m *Manager) DrainAndSave(channelID, messageText string) error {
 	m.mu.Lock()
 	s, ok := m.sessions[channelID]
 	if !ok {
-		now := time.Now().UTC()
+		now := time.Now()
 		s = &Session{
 			ChannelID: channelID,
 			Messages:  nil,
@@ -225,7 +225,7 @@ func (m *Manager) DrainAndSave(channelID, messageText string) error {
 		Role:    RoleUser,
 		Content: messageText,
 	})
-	s.UpdatedAt = time.Now().UTC()
+	s.UpdatedAt = time.Now()
 
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {

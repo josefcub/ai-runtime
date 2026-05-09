@@ -129,7 +129,7 @@ func (c *Client) writePartialResponse(resp *ChatResponse) {
 		return
 	}
 
-	ts := time.Now().UTC().Format("20060102-150405")
+	ts := time.Now().Format("20060102-150405")
 	name := fmt.Sprintf("partial-%s.log", ts)
 	path := filepath.Join(c.logDir, name)
 
