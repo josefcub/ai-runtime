@@ -127,8 +127,8 @@ func TestSessionJSONFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Read raw JSON and verify structure
-	data, err := os.ReadFile(filepath.Join(dir, "slack:abc123.json"))
+	// Read raw JSON and verify structure (filename is sanitized: colons → _)
+	data, err := os.ReadFile(filepath.Join(dir, "slack_abc123.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,8 +510,8 @@ func TestSanitizeChannelID(t *testing.T) {
 		expected string
 	}{
 		{"ch1", "ch1"},
-		{"slack:abc123", "slack:abc123"},            // colons preserved
-		{"slack:/some/path", "slack:_some_path"},     // forward slashes
+		{"slack:abc123", "slack_abc123"},              // colons replaced
+		{"slack:/some/path", "slack__some_path"},     // colons and slashes replaced
 		{"foo\\bar\\baz", "foo_bar_baz"},             // backslashes
 		{"a*b?c\"d<e>f|g", "a_b_c_d_e_f_g"},         // Windows reserved
 		{"a/b/c", "a_b_c"},                           // nested slashes

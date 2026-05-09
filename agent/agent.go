@@ -175,10 +175,6 @@ func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText,
 			})
 		}
 
-		// Summarize again after tool results to prevent context bloat within an iteration
-		if err := a.summarizeIfNeeded(ctx, sess, systemPrompt); err != nil {
-			return output.String(), err
-		}
 	}
 
 	// If max iterations exhausted and last message is a tool result or
