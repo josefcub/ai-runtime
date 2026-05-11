@@ -6,16 +6,18 @@ import (
 	"time"
 
 	"github.com/agent-project/harness/log"
+	"github.com/agent-project/harness/session"
 )
 
 const rejectionMessage = "Queue full. Messages are being dropped. Please wait and retry."
 
 // Message represents an inbound message from a channel.
 type Message struct {
-	ChannelID   string
-	MessageText string
-	CallbackURL string
-	ArrivalTime time.Time
+	ChannelID       string
+	MessageText     string
+	CallbackURL     string
+	ImageAttachment session.ImageAttachment
+	ArrivalTime     time.Time
 }
 
 // Queue is a FIFO message queue with per-channel depth tracking and backpressure.

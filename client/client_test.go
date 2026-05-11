@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/agent-project/harness/session"
 )
 
 // ---------- httpClient Tests ----------
@@ -26,7 +28,7 @@ func TestClient_Send_Success(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	client := &httpClient{host: u.Hostname(), port: mustPort(u), webhookPath: u.Path}
 
-	err := client.Send("test-ch", "hello world", "")
+	err := client.Send("test-ch", "hello world", "", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +56,7 @@ func TestClient_Send_WithCallback(t *testing.T) {
 	client := &httpClient{host: u.Hostname(), port: mustPort(u), webhookPath: u.Path}
 
 	cbURL := "http://127.0.0.1:9999/callback"
-	err := client.Send("ch-1", "test message", cbURL)
+	err := client.Send("ch-1", "test message", cbURL, session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +75,7 @@ func TestClient_Send_Non2xx(t *testing.T) {
 	u, _ := url.Parse(srv.URL)
 	client := &httpClient{host: u.Hostname(), port: mustPort(u), webhookPath: u.Path}
 
-	err := client.Send("ch-1", "hello", "")
+	err := client.Send("ch-1", "hello", "", session.ImageAttachment{})
 	if err == nil {
 		t.Fatal("expected error for 502 response, got nil")
 	}
@@ -81,9 +83,37 @@ func TestClient_Send_Non2xx(t *testing.T) {
 
 func TestClient_Send_ConnectionRefused(t *testing.T) {
 	client := &httpClient{host: "127.0.0.1", port: 59999, webhookPath: "/webhook"}
-	err := client.Send("ch", "msg", "")
+	err := client.Send("ch", "msg", "", session.ImageAttachment{})
 	if err == nil {
 		t.Fatal("expected error for connection refused, got nil")
+	}
+}
+
+func TestClient_Send_WithImageAttachment(t *testing.T) {
+	var received WebhookRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&received)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	u, _ := url.Parse(srv.URL)
+	client := &httpClient{host: u.Hostname(), port: mustPort(u), webhookPath: u.Path}
+
+	att := session.ImageAttachment{Data: "iVBORw0KGgo=", MIMEType: "image/png"}
+	err := client.Send("test-ch", "what is this image", "", att)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if received.ImageAttachment == nil {
+		t.Fatal("expected image_attachment to be sent, got nil")
+	}
+	if received.ImageAttachment.Data != "iVBORw0KGgo=" {
+		t.Errorf("data = %q, want %q", received.ImageAttachment.Data, "iVBORw0KGgo=")
+	}
+	if received.ImageAttachment.MIMEType != "image/png" {
+		t.Errorf("mime_type = %q, want %q", received.ImageAttachment.MIMEType, "image/png")
 	}
 }
 
@@ -201,7 +231,7 @@ func TestFullFlow_Callback(t *testing.T) {
 
 	// Send message
 	client := &httpClient{host: u.Hostname(), port: mustPort(u), webhookPath: u.Path}
-	err = client.Send("integration-ch", "hello harness", callbackURL)
+	err = client.Send("integration-ch", "hello harness", callbackURL, session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("send failed: %v", err)
 	}

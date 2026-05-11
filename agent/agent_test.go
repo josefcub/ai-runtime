@@ -46,6 +46,10 @@ func (m *mockClient) QueueError(err error) {
 	m.results = append(m.results, mockCallResult{err: err})
 }
 
+func (m *mockClient) QueuePartial(resp *llm.ChatResponse, err error) {
+	m.results = append(m.results, mockCallResult{resp: resp, err: err})
+}
+
 func (m *mockClient) Chat(_ context.Context, messages []llm.Message, _ json.RawMessage, maxTokens int) (*llm.ChatResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -59,10 +63,7 @@ func (m *mockClient) Chat(_ context.Context, messages []llm.Message, _ json.RawM
 	}
 
 	result := m.results[idx]
-	if result.err != nil {
-		return nil, result.err
-	}
-	return result.resp, nil
+	return result.resp, result.err
 }
 
 func (m *mockClient) LastMessages() []llm.Message {
@@ -124,7 +125,7 @@ func TestProcessPlainTextResponse(t *testing.T) {
 		Messages:  nil,
 	}
 
-	output, err := agent.Process(context.Background(), sess, "What is 2+2?", "You are helpful.")
+	output, err := agent.Process(context.Background(), sess, "What is 2+2?", "You are helpful.", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("Process failed: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestProcessToolCallLoop(t *testing.T) {
 		Messages:  nil,
 	}
 
-	output, err := agent.Process(context.Background(), sess, "Echo hello world", "You are helpful.")
+	output, err := agent.Process(context.Background(), sess, "Echo hello world", "You are helpful.", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("Process failed: %v", err)
 	}
@@ -214,7 +215,7 @@ func TestProcessMaxIterations(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err := agent.Process(ctx, sess, "Loop forever", "You are helpful.")
+	_, err := agent.Process(ctx, sess, "Loop forever", "You are helpful.", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("Process failed: %v", err)
 	}
@@ -258,7 +259,7 @@ func TestProcessMaxIterationsSyntheticClosing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	output, err := agent.Process(ctx, sess, "Loop forever", "You are helpful.")
+	output, err := agent.Process(ctx, sess, "Loop forever", "You are helpful.", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("Process failed: %v", err)
 	}
@@ -311,7 +312,7 @@ func TestProcessMaxIterationsNormalExitUnaffected(t *testing.T) {
 		Messages:  nil,
 	}
 
-	output, err := agent.Process(context.Background(), sess, "Say hello", "You are helpful.")
+	output, err := agent.Process(context.Background(), sess, "Say hello", "You are helpful.", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("Process failed: %v", err)
 	}
@@ -356,7 +357,7 @@ func TestProcessToolError(t *testing.T) {
 		Messages:  nil,
 	}
 
-	output, err := agent.Process(context.Background(), sess, "Do something", "You are helpful.")
+	output, err := agent.Process(context.Background(), sess, "Do something", "You are helpful.", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("Process failed: %v", err)
 	}
@@ -382,12 +383,64 @@ func TestProcessLLMError(t *testing.T) {
 		Messages:  nil,
 	}
 
-	_, err := agent.Process(context.Background(), sess, "Hello", "You are helpful.")
+	_, err := agent.Process(context.Background(), sess, "Hello", "You are helpful.", session.ImageAttachment{})
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if !strings.Contains(err.Error(), "connection refused") {
 		t.Errorf("expected 'connection refused' in error, got: %v", err)
+	}
+
+	// Only user message in session — no partial response to record
+	if len(sess.Messages) != 1 {
+		t.Errorf("expected 1 message (user only), got %d", len(sess.Messages))
+	}
+}
+
+func TestProcessPartialResponse(t *testing.T) {
+	initTestLogger(t)
+
+	mc := newMockClient()
+	mc.QueuePartial(&llm.ChatResponse{
+		Content:          "This is a partial ",
+		ReasoningContent: "thinking about it",
+		ToolCalls:        nil,
+	}, fmt.Errorf("connection reset — partial response"))
+
+	agent := setupAgent(t, mc, 8192, 0.70, 10, 20, 4096, true, true)
+	sess := &session.Session{
+		ChannelID: "test-channel",
+		Messages:  nil,
+	}
+
+	output, err := agent.Process(context.Background(), sess, "Hello", "You are helpful.", session.ImageAttachment{})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "partial response") {
+		t.Errorf("expected 'partial response' in error, got: %v", err)
+	}
+
+	// Partial content should be in output
+	if !strings.Contains(output, "This is a partial ") {
+		t.Errorf("expected partial content in output, got: %s", output)
+	}
+	if !strings.Contains(output, "thinking about it") {
+		t.Errorf("expected reasoning in output, got: %s", output)
+	}
+
+	// Session should have: user message + partial assistant message
+	if len(sess.Messages) != 2 {
+		t.Fatalf("expected 2 messages (user + partial assistant), got %d", len(sess.Messages))
+	}
+	if sess.Messages[1].Role != session.RoleAssistant {
+		t.Errorf("expected assistant role, got %s", sess.Messages[1].Role)
+	}
+	if sess.Messages[1].Content != "This is a partial " {
+		t.Errorf("expected partial content, got %q", sess.Messages[1].Content)
+	}
+	if sess.Messages[1].ReasoningContent != "thinking about it" {
+		t.Errorf("expected partial reasoning, got %q", sess.Messages[1].ReasoningContent)
 	}
 }
 
@@ -429,7 +482,7 @@ func TestSummarizationTriggersAtThreshold(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err := agent.Process(ctx, sess, "New message", "System.")
+	_, err := agent.Process(ctx, sess, "New message", "System.", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("Process failed: %v", err)
 	}
@@ -483,7 +536,7 @@ func TestSummarizationFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err := agent.Process(ctx, sess, "New message", "System.")
+	_, err := agent.Process(ctx, sess, "New message", "System.", session.ImageAttachment{})
 	if err == nil {
 		t.Fatal("expected error from summarization failure, got nil")
 	}
@@ -520,7 +573,7 @@ func TestSummarizationSkippedWhenUnderThreshold(t *testing.T) {
 		Messages:  nil,
 	}
 
-	_, err := agent.Process(context.Background(), sess, "Hello", "System.")
+	_, err := agent.Process(context.Background(), sess, "Hello", "System.", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("Process failed: %v", err)
 	}
@@ -606,7 +659,7 @@ func TestSystemPromptPreserved(t *testing.T) {
 	agent := setupAgent(t, mc, 8192, 0.70, 10, 20, 4096, true, true)
 	sess := &session.Session{ChannelID: "test", Messages: nil}
 
-	_, err := agent.Process(context.Background(), sess, "Hi", "You are a robot.")
+	_, err := agent.Process(context.Background(), sess, "Hi", "You are a robot.", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("Process failed: %v", err)
 	}
@@ -616,8 +669,15 @@ func TestSystemPromptPreserved(t *testing.T) {
 	if len(lastMsgs) == 0 {
 		t.Fatal("no messages sent to LLM")
 	}
-	if lastMsgs[0].Role != "system" || lastMsgs[0].Content != "You are a robot." {
-		t.Errorf("system prompt missing or incorrect: %+v", lastMsgs[0])
+	if lastMsgs[0].Role != "system" {
+		t.Errorf("expected role 'system', got %q", lastMsgs[0].Role)
+	}
+	var sysContent string
+	if err := json.Unmarshal(lastMsgs[0].Content, &sysContent); err != nil {
+		t.Fatalf("unmarshal system content: %v", err)
+	}
+	if sysContent != "You are a robot." {
+		t.Errorf("expected 'You are a robot.', got %q", sysContent)
 	}
 }
 
@@ -649,7 +709,7 @@ func TestMultipleToolCallsInOneTurn(t *testing.T) {
 	agent := setupAgent(t, mc, 8192, 0.70, 10, 20, 4096, true, true)
 	sess := &session.Session{ChannelID: "test", Messages: nil}
 
-	output, err := agent.Process(context.Background(), sess, "Echo twice", "You are helpful.")
+	output, err := agent.Process(context.Background(), sess, "Echo twice", "You are helpful.", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("Process failed: %v", err)
 	}
@@ -678,7 +738,7 @@ func TestProcessEmptyContentResponse(t *testing.T) {
 	agent := setupAgent(t, mc, 8192, 0.70, 10, 20, 4096, true, true)
 	sess := &session.Session{ChannelID: "test", Messages: nil}
 
-	output, err := agent.Process(context.Background(), sess, "Silent", "You are helpful.")
+	output, err := agent.Process(context.Background(), sess, "Silent", "You are helpful.", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("Process failed: %v", err)
 	}
@@ -686,5 +746,62 @@ func TestProcessEmptyContentResponse(t *testing.T) {
 	// Empty content is valid — no tool calls, no text
 	if output != "" {
 		t.Errorf("expected empty output, got %q", output)
+	}
+}
+
+func TestProcessWithImageAttachment(t *testing.T) {
+	initTestLogger(t)
+
+	mc := newMockClient()
+	mc.QueueResponse(&llm.ChatResponse{
+		Content:   "I see a photo of a cat.",
+		ToolCalls: nil,
+	})
+
+	agent := setupAgent(t, mc, 8192, 0.70, 10, 20, 4096, true, true)
+	sess := &session.Session{
+		ChannelID: "test-channel",
+		Messages:  nil,
+	}
+
+	att := session.ImageAttachment{Data: "iVBORw0KGgo=", MIMEType: "image/png"}
+	output, err := agent.Process(context.Background(), sess, "what is this?", "You are helpful.", att)
+	if err != nil {
+		t.Fatalf("Process failed: %v", err)
+	}
+
+	if !strings.Contains(output, "I see a photo of a cat.") {
+		t.Errorf("expected output to contain answer, got: %s", output)
+	}
+
+	// User message should have the attachment
+	if len(sess.Messages) < 1 {
+		t.Fatal("expected at least 1 message in session")
+	}
+	if len(sess.Messages[0].Attachments) != 1 {
+		t.Errorf("expected 1 attachment on user message, got %d", len(sess.Messages[0].Attachments))
+	}
+	if sess.Messages[0].Attachments[0].Data != "iVBORw0KGgo=" {
+		t.Errorf("attachment data mismatch: %q", sess.Messages[0].Attachments[0].Data)
+	}
+
+	// Verify the LLM received a multimodal message
+	lastMsgs := mc.LastMessages()
+	if len(lastMsgs) < 2 {
+		t.Fatal("expected at least 2 LLM messages (system + user)")
+	}
+	// User message content should be a content-parts array (json.RawMessage)
+	var parts []map[string]interface{}
+	if err := json.Unmarshal(lastMsgs[1].Content, &parts); err != nil {
+		t.Fatalf("expected user message content to be a content-parts array, got: %s", string(lastMsgs[1].Content))
+	}
+	if len(parts) != 2 {
+		t.Errorf("expected 2 content parts (text + image), got %d", len(parts))
+	}
+	if parts[0]["type"] != "text" {
+		t.Errorf("expected first part type 'text', got %v", parts[0]["type"])
+	}
+	if parts[1]["type"] != "image_url" {
+		t.Errorf("expected second part type 'image_url', got %v", parts[1]["type"])
 	}
 }

@@ -26,7 +26,7 @@ type mockProcessor struct {
 	err      error
 }
 
-func (m *mockProcessor) Process(ctx context.Context, sess *session.Session, messageText, systemPrompt string) (string, error) {
+func (m *mockProcessor) Process(ctx context.Context, sess *session.Session, messageText, systemPrompt string, imageAtt session.ImageAttachment) (string, error) {
 	m.mu.Lock()
 	m.calls = append(m.calls, messageText)
 	m.mu.Unlock()
@@ -36,10 +36,14 @@ func (m *mockProcessor) Process(ctx context.Context, sess *session.Session, mess
 	}
 
 	// Simulate real agent behavior: add user + assistant messages to session
-	sess.Messages = append(sess.Messages, session.ConversationMessage{
+	userMsg := session.ConversationMessage{
 		Role:    session.RoleUser,
 		Content: messageText,
-	})
+	}
+	if imageAtt.Data != "" {
+		userMsg.Attachments = []session.ImageAttachment{imageAtt}
+	}
+	sess.Messages = append(sess.Messages, userMsg)
 	sess.Messages = append(sess.Messages, session.ConversationMessage{
 		Role:    session.RoleAssistant,
 		Content: m.response,

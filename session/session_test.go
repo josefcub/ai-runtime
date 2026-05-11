@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -387,7 +388,7 @@ func TestDrainAndSave_NewChannel(t *testing.T) {
 	dir := tmpDir(t)
 	m := NewManager(dir)
 
-	err := m.DrainAndSave("drain:ch1", "shutdown message")
+	err := m.DrainAndSave("drain:ch1", "shutdown message", ImageAttachment{})
 	if err != nil {
 		t.Fatalf("DrainAndSave failed: %v", err)
 	}
@@ -419,7 +420,7 @@ func TestDrainAndSave_AppendExisting(t *testing.T) {
 	m.Save(s)
 
 	// Drain append
-	err := m.DrainAndSave("drain:ch2", "pending message")
+	err := m.DrainAndSave("drain:ch2", "pending message", ImageAttachment{})
 	if err != nil {
 		t.Fatalf("DrainAndSave failed: %v", err)
 	}
@@ -445,7 +446,7 @@ func TestDrainAndSave_AtomicWrite(t *testing.T) {
 	dir := tmpDir(t)
 	m := NewManager(dir)
 
-	m.DrainAndSave("drain:ch3", "test")
+	m.DrainAndSave("drain:ch3", "test", ImageAttachment{})
 
 	// No .tmp file should remain
 	entries, err := os.ReadDir(dir)
@@ -463,9 +464,9 @@ func TestDrainAndSave_MultipleChannels(t *testing.T) {
 	dir := tmpDir(t)
 	m := NewManager(dir)
 
-	m.DrainAndSave("a", "msg for a")
-	m.DrainAndSave("b", "msg for b")
-	m.DrainAndSave("a", "second for a")
+	m.DrainAndSave("a", "msg for a", ImageAttachment{})
+	m.DrainAndSave("b", "msg for b", ImageAttachment{})
+	m.DrainAndSave("a", "second for a", ImageAttachment{})
 
 	m2 := NewManager(dir)
 	m2.LoadAll()
@@ -478,6 +479,56 @@ func TestDrainAndSave_MultipleChannels(t *testing.T) {
 	}
 	if len(sB.Messages) != 1 {
 		t.Errorf("expected 1 message for b, got %d", len(sB.Messages))
+	}
+}
+
+func TestDrainAndSave_WithImageAttachment(t *testing.T) {
+	dir := tmpDir(t)
+	m := NewManager(dir)
+
+	att := ImageAttachment{Data: "imgdata123", MIMEType: "image/png"}
+	err := m.DrainAndSave("drain:img", "what is this image", att)
+	if err != nil {
+		t.Fatalf("DrainAndSave failed: %v", err)
+	}
+
+	// Verify via load
+	m2 := NewManager(dir)
+	if err := m2.LoadAll(); err != nil {
+		t.Fatal(err)
+	}
+	s := m2.Get("drain:img")
+	if len(s.Messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(s.Messages))
+	}
+	if len(s.Messages[0].Attachments) != 1 {
+		t.Errorf("expected 1 attachment, got %d", len(s.Messages[0].Attachments))
+	}
+	if s.Messages[0].Attachments[0].Data != "imgdata123" {
+		t.Errorf("data mismatch: %q", s.Messages[0].Attachments[0].Data)
+	}
+	if s.Messages[0].Attachments[0].MIMEType != "image/png" {
+		t.Errorf("mime_type mismatch: %q", s.Messages[0].Attachments[0].MIMEType)
+	}
+}
+
+func TestDrainAndSave_NoAttachment(t *testing.T) {
+	dir := tmpDir(t)
+	m := NewManager(dir)
+
+	// Zero-value attachment should not create an attachments entry
+	err := m.DrainAndSave("drain:noimg", "just text", ImageAttachment{})
+	if err != nil {
+		t.Fatalf("DrainAndSave failed: %v", err)
+	}
+
+	m2 := NewManager(dir)
+	if err := m2.LoadAll(); err != nil {
+		t.Fatal(err)
+	}
+	s := m2.Get("drain:noimg")
+	if len(s.Messages[0].Attachments) != 0 {
+		t.Errorf("expected no attachments, got %d", len(s.Messages[0].Attachments))
 	}
 }
 
@@ -604,7 +655,7 @@ func TestDrainAndSaveWithSlashes(t *testing.T) {
 	dir := tmpDir(t)
 	m := NewManager(dir)
 
-	err := m.DrainAndSave("a/b/c", "shutdown msg")
+	err := m.DrainAndSave("a/b/c", "shutdown msg", ImageAttachment{})
 	if err != nil {
 		t.Fatalf("DrainAndSave failed: %v", err)
 	}
@@ -623,5 +674,129 @@ func TestDrainAndSaveWithSlashes(t *testing.T) {
 	// File should exist with sanitized name
 	if _, err := os.Stat(filepath.Join(dir, "a_b_c.json")); err != nil {
 		t.Fatalf("expected a_b_c.json, got error: %v", err)
+	}
+}
+
+func TestImageAttachmentMarshalUnmarshal(t *testing.T) {
+	msg := ConversationMessage{
+		Role:       RoleTool,
+		Content:    "Image loaded: photo.png (image/png, 12 KB)",
+		ToolCallID: "call_img",
+		Attachments: []ImageAttachment{
+			{Data: "iVBORw0KGgo=", MIMEType: "image/png"},
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed ConversationMessage
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	if parsed.Role != RoleTool {
+		t.Errorf("expected RoleTool, got %s", parsed.Role)
+	}
+	if parsed.Content != "Image loaded: photo.png (image/png, 12 KB)" {
+		t.Errorf("content mismatch: %q", parsed.Content)
+	}
+	if parsed.ToolCallID != "call_img" {
+		t.Errorf("expected tool_call_id=call_img, got %s", parsed.ToolCallID)
+	}
+	if len(parsed.Attachments) != 1 {
+		t.Fatalf("expected 1 attachment, got %d", len(parsed.Attachments))
+	}
+	if parsed.Attachments[0].Data != "iVBORw0KGgo=" {
+		t.Errorf("data mismatch: %q", parsed.Attachments[0].Data)
+	}
+	if parsed.Attachments[0].MIMEType != "image/png" {
+		t.Errorf("mime_type mismatch: %q", parsed.Attachments[0].MIMEType)
+	}
+}
+
+func TestImageAttachmentOmitEmpty(t *testing.T) {
+	// Messages without attachments should not include the "attachments" key
+	msg := ConversationMessage{
+		Role:    RoleUser,
+		Content: "hello",
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(string(data), "attachments") {
+		t.Errorf("expected no 'attachments' key in JSON, got: %s", string(data))
+	}
+}
+
+func TestImageAttachmentToLLMContentPart(t *testing.T) {
+	att := ImageAttachment{
+		Data:     "abc123base64",
+		MIMEType: "image/jpeg",
+	}
+
+	part := att.ToLLMContentPart()
+
+	if part["type"] != "image_url" {
+		t.Errorf("expected type 'image_url', got %v", part["type"])
+	}
+
+	imgURL, ok := part["image_url"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected image_url to be a map")
+	}
+
+	expectedURL := "data:image/jpeg;base64,abc123base64"
+	if imgURL["url"] != expectedURL {
+		t.Errorf("expected url %q, got %v", expectedURL, imgURL["url"])
+	}
+}
+
+func TestSessionSaveLoadWithAttachments(t *testing.T) {
+	dir := tmpDir(t)
+	m := NewManager(dir)
+
+	s := m.Get("ch1")
+	s.Messages = []ConversationMessage{
+		{Role: RoleUser, Content: "show me the image"},
+		{
+			Role:       RoleTool,
+			Content:    "Image loaded: test.png (image/png, 1 KB)",
+			ToolCallID: "call_1",
+			Attachments: []ImageAttachment{
+				{Data: "iVBORw0KGgo=", MIMEType: "image/png"},
+			},
+		},
+	}
+
+	if err := m.Save(s); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+
+	// Load in a new manager
+	m2 := NewManager(dir)
+	if err := m2.LoadAll(); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+
+	s2 := m2.Get("ch1")
+	if len(s2.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(s2.Messages))
+	}
+
+	toolMsg := s2.Messages[1]
+	if len(toolMsg.Attachments) != 1 {
+		t.Fatalf("expected 1 attachment after load, got %d", len(toolMsg.Attachments))
+	}
+	if toolMsg.Attachments[0].Data != "iVBORw0KGgo=" {
+		t.Errorf("data mismatch after load: %q", toolMsg.Attachments[0].Data)
+	}
+	if toolMsg.Attachments[0].MIMEType != "image/png" {
+		t.Errorf("mime_type mismatch after load: %q", toolMsg.Attachments[0].MIMEType)
 	}
 }

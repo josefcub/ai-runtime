@@ -102,9 +102,10 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, int64(s.maxBodyBytes))
 
 	var body struct {
-		Channel     string `json:"channel"`
-		Message     string `json:"message"`
-		CallbackURL string `json:"callback_url"`
+		Channel         string                    `json:"channel"`
+		Message         string                    `json:"message"`
+		CallbackURL     string                    `json:"callback_url"`
+		ImageAttachment *session.ImageAttachment  `json:"image_attachment"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -152,6 +153,9 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		ChannelID:   body.Channel,
 		MessageText: fmt.Sprintf("[%s] [#%s] %s", time.Now().Format("01/02/2006 15:04:05"), body.Channel, body.Message),
 		CallbackURL: body.CallbackURL,
+	}
+	if body.ImageAttachment != nil {
+		msg.ImageAttachment = *body.ImageAttachment
 	}
 
 	rejection, _ := s.q.Enqueue(msg)

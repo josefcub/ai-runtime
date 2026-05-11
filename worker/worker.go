@@ -16,7 +16,7 @@ import (
 
 // Processor is the interface for message processing (implemented by agent.Agent).
 type Processor interface {
-	Process(ctx context.Context, sess *session.Session, messageText, systemPrompt string) (string, error)
+	Process(ctx context.Context, sess *session.Session, messageText, systemPrompt string, imageAtt session.ImageAttachment) (string, error)
 }
 
 // promptFiles lists the workspace markdown files loaded into the system prompt,
@@ -115,7 +115,7 @@ func (w *Worker) processMessage(ctx context.Context, msg queue.Message) {
 	sess := w.sessions.Get(msg.ChannelID)
 
 	// Process through the agent with composed system prompt
-	output, err := w.processor.Process(ctx, sess, msg.MessageText, w.buildSystemPrompt())
+	output, err := w.processor.Process(ctx, sess, msg.MessageText, w.buildSystemPrompt(), msg.ImageAttachment)
 	if err != nil {
 		logger.Error("agent processing failed",
 			"channel", msg.ChannelID,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"syscall"
 
 	"github.com/agent-project/harness/config"
+	"github.com/agent-project/harness/imageutil"
+	"github.com/agent-project/harness/session"
 )
 
 // ---------- CLI Entry Point ----------
@@ -25,6 +28,7 @@ func main() {
 	cbURL := flag.String("cb", "", "Callback URL to use instead of local server")
 	channel := flag.String("n", "cli", "Harness channel ID")
 	trace := flag.Bool("t", false, "Show reasoning and tool calls in output (auto-enabled when log level is debug)")
+	imageFile := flag.String("v", "", "Image file path to attach to the message")
 	flag.Parse()
 
 	// Resolve callback mode (default: spin up local server and wait)
@@ -57,6 +61,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Validate and encode the image file if provided
+	var imageAtt session.ImageAttachment
+	if *imageFile != "" {
+		data, err := os.ReadFile(*imageFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error reading image: %v\n", err)
+			os.Exit(1)
+		}
+		if len(data) > imageutil.MaxImageSize {
+			fmt.Fprintf(os.Stderr, "error: image too large: %d bytes (max %d)\n", len(data), imageutil.MaxImageSize)
+			os.Exit(1)
+		}
+		mime := imageutil.DetectMIME(data)
+		if mime == "" {
+			fmt.Fprintf(os.Stderr, "error: not a recognized image file: %s\n", *imageFile)
+			os.Exit(1)
+		}
+		imageAtt = session.ImageAttachment{
+			Data:     base64.StdEncoding.EncodeToString(data),
+			MIMEType: mime,
+		}
+	}
+
 	// Load just the [server] and [logging] sections from the shared config.ini
 	data, err := config.ParseFile(*cfgPath)
 	if err != nil {
@@ -79,7 +106,7 @@ func main() {
 	}
 
 	if callbackMode == "none" {
-		err = client.Send(*channel, message, "")
+		err = client.Send(*channel, message, "", imageAtt)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error sending message: %v\n", err)
 			os.Exit(1)
@@ -91,7 +118,7 @@ func main() {
 	}
 
 	if callbackMode == "external" {
-		err = client.Send(*channel, message, *cbURL)
+		err = client.Send(*channel, message, *cbURL, imageAtt)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error sending message: %v\n", err)
 			os.Exit(1)
@@ -120,7 +147,7 @@ func main() {
 		os.Exit(130)
 	}()
 
-	err = client.Send(*channel, message, callbackURL)
+	err = client.Send(*channel, message, callbackURL, imageAtt)
 	if err != nil {
 		cb.stop()
 		fmt.Fprintf(os.Stderr, "error sending message: %v\n", err)
@@ -151,9 +178,10 @@ type httpClient struct {
 
 // WebhookRequest matches the harness inbound JSON schema.
 type WebhookRequest struct {
-	Channel     string `json:"channel"`
-	Message     string `json:"message"`
-	CallbackURL string `json:"callback_url,omitempty"`
+	Channel        string                    `json:"channel"`
+	Message        string                    `json:"message"`
+	CallbackURL    string                    `json:"callback_url,omitempty"`
+	ImageAttachment *session.ImageAttachment `json:"image_attachment,omitempty"`
 }
 
 // CallbackResponse matches the harness outbound JSON schema.
@@ -163,13 +191,16 @@ type CallbackResponse struct {
 }
 
 // Send posts a webhook message to the harness.
-func (c *httpClient) Send(channel, message, callbackURL string) error {
+func (c *httpClient) Send(channel, message, callbackURL string, imageAtt session.ImageAttachment) error {
 	payload := WebhookRequest{
 		Channel: channel,
 		Message: message,
 	}
 	if callbackURL != "" {
 		payload.CallbackURL = callbackURL
+	}
+	if imageAtt.Data != "" {
+		payload.ImageAttachment = &imageAtt
 	}
 
 	body, err := json.Marshal(payload)

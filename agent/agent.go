@@ -13,6 +13,9 @@ import (
 	"github.com/agent-project/harness/tools"
 )
 
+// attachmentTokenCost is the estimated token cost per image attachment.
+const attachmentTokenCost = 1000
+
 // ChatClient is the interface for LLM chat completions.
 type ChatClient interface {
 	Chat(ctx context.Context, messages []llm.Message, toolsJSON json.RawMessage, maxTokens int) (*llm.ChatResponse, error)
@@ -53,11 +56,15 @@ func New(client ChatClient, reg *tools.Registry, maxToolIterations, contextToken
 // Process runs the tool-call loop for a single user message and returns the
 // aggregated output string. The user message is appended to the session before
 // processing begins.
-func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText, systemPrompt string) (string, error) {
-	sess.Messages = append(sess.Messages, session.ConversationMessage{
+func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText, systemPrompt string, imageAtt session.ImageAttachment) (string, error) {
+	msg := session.ConversationMessage{
 		Role:    session.RoleUser,
 		Content: messageText,
-	})
+	}
+	if imageAtt.Data != "" {
+		msg.Attachments = []session.ImageAttachment{imageAtt}
+	}
+	sess.Messages = append(sess.Messages, msg)
 
 	// Log user message to channel log
 	_ = a.channelLogger.LogUser(sess.ChannelID, messageText)
@@ -90,6 +97,25 @@ func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText,
 		resp, err := a.client.Chat(ctx, messages, toolsJSON, a.maxTokens)
 		if err != nil {
 			logger.Error("LLM call failed", "error", err.Error())
+
+			// If we got a partial response, record it in the session so the
+			// content is not lost. Do not attempt tool execution.
+			if resp != nil {
+				sess.Messages = append(sess.Messages, session.ConversationMessage{
+					Role:             session.RoleAssistant,
+					Content:          resp.Content,
+					ReasoningContent: resp.ReasoningContent,
+				})
+				// Accumulate into callback output
+				if resp.ReasoningContent != "" {
+					output.WriteString("[Reasoning: " + resp.ReasoningContent + "]\n")
+				}
+				if resp.Content != "" {
+					output.WriteString(resp.Content)
+				}
+				return output.String(), fmt.Errorf("LLM call interrupted (iteration %d, partial response saved): %w", i+1, err)
+			}
+
 			return output.String(), fmt.Errorf("LLM call failed (iteration %d): %w", i+1, err)
 		}
 
@@ -167,12 +193,19 @@ func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText,
 
 			output.WriteString(fmt.Sprintf("[Result: %s]\n", result))
 
+			// Parse result for embedded attachments (e.g. images from view_image)
+			text, attachments := parseToolResult(result)
+
 			// Append tool result to session
-			sess.Messages = append(sess.Messages, session.ConversationMessage{
+			toolMsg := session.ConversationMessage{
 				Role:       session.RoleTool,
-				Content:    result,
+				Content:    text,
 				ToolCallID: tc.ID,
-			})
+			}
+			if len(attachments) > 0 {
+				toolMsg.Attachments = attachments
+			}
+			sess.Messages = append(sess.Messages, toolMsg)
 		}
 
 	}
@@ -238,17 +271,12 @@ func (a *Agent) summarizeContext(ctx context.Context, sess *session.Session) err
 
 	// Build messages for summary LLM call (no tools, just conversation)
 	summaryMessages := make([]llm.Message, 0, len(old)+1)
-	summaryMessages = append(summaryMessages, llm.Message{
-		Role:    "system",
-		Content: a.summaryPrompt,
-	})
+	summaryMessages = append(summaryMessages, llm.NewTextMessage("system", a.summaryPrompt))
 	for _, msg := range old {
-		summaryMessages = append(summaryMessages, llm.Message{
-			Role:             string(msg.Role),
-			Content:          msg.Content,
-			ReasoningContent: msg.ReasoningContent,
-			ToolCallID:       msg.ToolCallID,
-		})
+		smsg := llm.NewTextMessage(string(msg.Role), msg.Content)
+		smsg.ReasoningContent = msg.ReasoningContent
+		smsg.ToolCallID = msg.ToolCallID
+		summaryMessages = append(summaryMessages, smsg)
 	}
 
 	// Call LLM for summary
@@ -325,17 +353,71 @@ func (a *Agent) totalTokens(sess *session.Session, systemPrompt string) int {
 			total += len(tc.Function.Arguments) / 2
 		}
 		total += len(msg.ToolCallID) / 2
+		// Each image attachment costs ~1000 tokens (image encoder overhead)
+		total += len(msg.Attachments) * attachmentTokenCost
 	}
 	return total
 }
 
 // splitMessages splits the message list into old and recent groups.
-// The most recent `keepRecent` messages are preserved; everything else is old.
+// The most recent `keepRecent` messages are preserved, along with any messages
+// that have image attachments (which cannot be summarized). Everything else is old.
 func splitMessages(messages []session.ConversationMessage, keepRecent int) (old, recent []session.ConversationMessage) {
 	if keepRecent <= 0 || len(messages) <= keepRecent {
 		return messages, nil
 	}
-	return messages[:len(messages)-keepRecent], messages[len(messages)-keepRecent:]
+
+	n := len(messages)
+	recentStart := n - keepRecent
+
+	// Collect messages with attachments from the "old" region and move them to recent
+	var protected []session.ConversationMessage
+	var filteredOld []session.ConversationMessage
+	for i := 0; i < recentStart; i++ {
+		if len(messages[i].Attachments) > 0 {
+			protected = append(protected, messages[i])
+		} else {
+			filteredOld = append(filteredOld, messages[i])
+		}
+	}
+
+	recent = messages[recentStart:]
+	if len(protected) > 0 {
+		recent = append(protected, recent...)
+	}
+
+	return filteredOld, recent
+}
+
+// parseToolResult parses a tool result string for embedded image attachments.
+// If the result is valid JSON containing an "__attachment" key, it extracts the
+// attachment and returns the "text" portion as the visible result.
+func parseToolResult(result string) (string, []session.ImageAttachment) {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(result), &parsed); err != nil {
+		return result, nil
+	}
+
+	attJSON, ok := parsed["__attachment"]
+	if !ok {
+		return result, nil
+	}
+
+	attBytes, err := json.Marshal(attJSON)
+	if err != nil {
+		return result, nil
+	}
+
+	var att session.ImageAttachment
+	if err := json.Unmarshal(attBytes, &att); err != nil {
+		return result, nil
+	}
+
+	// Use the "text" field if present, otherwise return the original result
+	if text, ok := parsed["text"].(string); ok {
+		return text, []session.ImageAttachment{att}
+	}
+	return "", []session.ImageAttachment{att}
 }
 
 // toLLMMessages converts session messages to LLM API messages, prepending the system prompt.
@@ -343,36 +425,88 @@ func (a *Agent) toLLMMessages(sess *session.Session, systemPrompt string) []llm.
 	msgs := make([]llm.Message, 0, len(sess.Messages)+1)
 
 	// System prompt is always first
-	msgs = append(msgs, llm.Message{
-		Role:    "system",
-		Content: systemPrompt,
-	})
+	msgs = append(msgs, llm.NewTextMessage("system", systemPrompt))
 
 	for _, msg := range sess.Messages {
-		llmMsg := llm.Message{
-			Role:             string(msg.Role),
-			Content:          msg.Content,
-			ReasoningContent: msg.ReasoningContent,
-		}
-
-		if len(msg.ToolCalls) > 0 {
-			for _, tc := range msg.ToolCalls {
-				llmTC := llm.ToolCall{
-					ID:   tc.ID,
-					Type: tc.Type,
-				}
-				llmTC.Function.Name = tc.Function.Name
-				llmTC.Function.Arguments = tc.Function.Arguments
-				llmMsg.ToolCalls = append(llmMsg.ToolCalls, llmTC)
-			}
-		}
-
-		if msg.ToolCallID != "" {
-			llmMsg.ToolCallID = msg.ToolCallID
-		}
-
+		llmMsg := a.convertMessage(msg)
 		msgs = append(msgs, llmMsg)
 	}
 
 	return msgs
+}
+
+// convertMessage converts a session message to an LLM API message.
+func (a *Agent) convertMessage(msg session.ConversationMessage) llm.Message {
+	// Check if this message has image attachments — if so, use multimodal content
+	if len(msg.Attachments) > 0 {
+		return a.toMultimodalMessage(msg)
+	}
+
+	// Plain text message
+	llmMsg := llm.NewTextMessage(string(msg.Role), msg.Content)
+	llmMsg.ReasoningContent = msg.ReasoningContent
+
+	if len(msg.ToolCalls) > 0 {
+		for _, tc := range msg.ToolCalls {
+			llmTC := llm.ToolCall{
+				ID:   tc.ID,
+				Type: tc.Type,
+			}
+			llmTC.Function.Name = tc.Function.Name
+			llmTC.Function.Arguments = tc.Function.Arguments
+			llmMsg.ToolCalls = append(llmMsg.ToolCalls, llmTC)
+		}
+	}
+
+	if msg.ToolCallID != "" {
+		llmMsg.ToolCallID = msg.ToolCallID
+	}
+
+	return llmMsg
+}
+
+// toMultimodalMessage converts a message with image attachments to a
+// multimodal content-parts message for the LLM vision API.
+func (a *Agent) toMultimodalMessage(msg session.ConversationMessage) llm.Message {
+	parts := make([]map[string]interface{}, 0, len(msg.Attachments)+1)
+
+	// Add text part first (if any)
+	if msg.Content != "" {
+		parts = append(parts, map[string]interface{}{
+			"type": "text",
+			"text": msg.Content,
+		})
+	}
+
+	// Add image parts
+	for _, att := range msg.Attachments {
+		parts = append(parts, att.ToLLMContentPart())
+	}
+
+	// Marshal the content parts array to raw JSON
+	contentJSON, _ := json.Marshal(parts)
+
+	llmMsg := llm.Message{
+		Role:             string(msg.Role),
+		Content:          contentJSON,
+		ReasoningContent: msg.ReasoningContent,
+	}
+
+	if len(msg.ToolCalls) > 0 {
+		for _, tc := range msg.ToolCalls {
+			llmTC := llm.ToolCall{
+				ID:   tc.ID,
+				Type: tc.Type,
+			}
+			llmTC.Function.Name = tc.Function.Name
+			llmTC.Function.Arguments = tc.Function.Arguments
+			llmMsg.ToolCalls = append(llmMsg.ToolCalls, llmTC)
+		}
+	}
+
+	if msg.ToolCallID != "" {
+		llmMsg.ToolCallID = msg.ToolCallID
+	}
+
+	return llmMsg
 }

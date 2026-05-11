@@ -153,7 +153,7 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 	}
 
 	for _, msg := range pending {
-		if err := sessions.DrainAndSave(msg.ChannelID, msg.MessageText); err != nil {
+		if err := sessions.DrainAndSave(msg.ChannelID, msg.MessageText, msg.ImageAttachment); err != nil {
 			t.Fatalf("drain and save: %v", err)
 		}
 	}
@@ -565,7 +565,7 @@ func TestIntegration_SignalHandling(t *testing.T) {
 	}
 
 	for _, msg := range pending {
-		if err := sessions.DrainAndSave(msg.ChannelID, msg.MessageText); err != nil {
+		if err := sessions.DrainAndSave(msg.ChannelID, msg.MessageText, msg.ImageAttachment); err != nil {
 			t.Fatalf("drain: %v", err)
 		}
 	}
@@ -781,7 +781,7 @@ func TestIntegration_AgentWithContextTrimming(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err = agt.Process(ctx, sess, "final message", "system prompt")
+	_, err = agt.Process(ctx, sess, "final message", "system prompt", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("process: %v", err)
 	}
@@ -905,7 +905,7 @@ func TestIntegration_SystemPromptNotInSession(t *testing.T) {
 	sess := sessMgr.Get("prompt-test")
 
 	ctx := context.Background()
-	_, err = agt.Process(ctx, sess, "test", "secret system prompt")
+	_, err = agt.Process(ctx, sess, "test", "secret system prompt", session.ImageAttachment{})
 	if err != nil {
 		t.Fatalf("process: %v", err)
 	}
@@ -982,7 +982,7 @@ func TestIntegration_GracefulShutdownSignal(t *testing.T) {
 	// Simulate SIGTERM: drain pending, save all, clear
 	pending := q.Pending()
 	for _, msg := range pending {
-		sessions.DrainAndSave(msg.ChannelID, msg.MessageText)
+		sessions.DrainAndSave(msg.ChannelID, msg.MessageText, msg.ImageAttachment)
 	}
 	sessions.SaveAll()
 	q.Clear()

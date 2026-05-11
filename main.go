@@ -69,6 +69,7 @@ func main() {
 	reg := tools.New(workingDir)
 	tools.RegisterFileTools(reg)
 	tools.RegisterWebTools(reg)
+	tools.RegisterImageTools(reg)
 	tools.RegisterBashTools(reg, cfg.Bash.Enabled, cfg.Bash.Timeout, cfg.Bash.MaxOutput, cfg.Bash.Banned)
 
 	// 7. Create LLM client
@@ -158,7 +159,7 @@ func main() {
 	// Do not call the LLM; this is solely to prevent message loss.
 	pending := q.Pending()
 	for _, msg := range pending {
-		if err := sessions.DrainAndSave(msg.ChannelID, msg.MessageText); err != nil {
+		if err := sessions.DrainAndSave(msg.ChannelID, msg.MessageText, msg.ImageAttachment); err != nil {
 			logger.Error("failed to drain message to session",
 				"channel", msg.ChannelID,
 				"error", err.Error(),

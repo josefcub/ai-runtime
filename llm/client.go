@@ -28,7 +28,7 @@ type Client struct {
 }
 
 // New creates a new LLM client.
-// logDir is used to write partial response files when debug logging is enabled.
+// logDir is used to write partial response files when the LLM stream is interrupted.
 func New(baseURL, model, apiKey string, timeout time.Duration, logDir string) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -43,12 +43,23 @@ func New(baseURL, model, apiKey string, timeout time.Duration, logDir string) *C
 }
 
 // Message represents a chat message for the LLM API.
+// Content is json.RawMessage to support both plain text (string) and
+// multimodal content (array of content parts for vision).
 type Message struct {
-	Role              string     `json:"role"`
-	Content           string     `json:"content"`
-	ReasoningContent  string     `json:"reasoning_content,omitempty"`
-	ToolCalls         []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID        string     `json:"tool_call_id,omitempty"`
+	Role             string          `json:"role"`
+	Content          json.RawMessage `json:"content"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+}
+
+// NewTextMessage creates a Message with a plain text content string.
+func NewTextMessage(role, content string) Message {
+	b, _ := json.Marshal(content)
+	return Message{
+		Role:    role,
+		Content: json.RawMessage(b),
+	}
 }
 
 // ToolCall represents a tool invocation from the LLM.
@@ -72,6 +83,11 @@ type ChatResponse struct {
 // cancellation or timeout) but some content was already received. The Chat() method
 // writes the partial content to a debug logfile before returning this error.
 var ErrPartialResponse = errors.New("partial LLM response — connection interrupted")
+
+// ErrSSEParseError is returned when the SSE stream encounters a parse error
+// (e.g. broken pipe not tied to context cancellation). Partial content is
+// preserved and written to a logfile before returning this error.
+var ErrSSEParseError = errors.New("SSE stream parse error — partial response saved")
 
 // Chat sends a chat completion request with streaming (SSE) and returns the
 // aggregated response including any tool calls.
@@ -114,18 +130,21 @@ func (c *Client) Chat(ctx context.Context, messages []Message, toolsJSON json.Ra
 	}
 
 	result, err := parseSSE(ctx, resp.Body)
-	if err == ErrPartialResponse && result != nil {
+	if err != nil && result != nil {
 		c.writePartialResponse(result)
-		return nil, fmt.Errorf("LLM call interrupted (partial response saved): %w", err)
+		if errors.Is(err, ErrPartialResponse) {
+			return result, fmt.Errorf("LLM call interrupted (partial response saved): %w", err)
+		}
+		return result, fmt.Errorf("LLM call error (partial response saved): %w", err)
 	}
 	return result, err
 }
 
-// writePartialResponse writes the partial LLM response to a debug logfile
-// when debug logging is enabled. This preserves the work done by the model
-// before the connection was interrupted, without contaminating the session file.
+// writePartialResponse writes the partial LLM response to a debug logfile.
+// This preserves the work done by the model before the connection was interrupted,
+// without contaminating the session file.
 func (c *Client) writePartialResponse(resp *ChatResponse) {
-	if log.GetGlobal().Level != log.DebugLevel {
+	if resp.Content == "" && resp.ReasoningContent == "" && len(resp.ToolCalls) == 0 {
 		return
 	}
 
@@ -163,7 +182,7 @@ func (c *Client) writePartialResponse(resp *ChatResponse) {
 		return
 	}
 
-	log.GetGlobal().WithSource("llm").Debug("partial response saved",
+	log.GetGlobal().WithSource("llm").Info("partial response saved",
 		"file", path,
 		"content_bytes", fmt.Sprintf("%d", len(resp.Content)),
 		"reasoning_bytes", fmt.Sprintf("%d", len(resp.ReasoningContent)),
@@ -248,6 +267,8 @@ func parseSSE(ctx context.Context, reader io.Reader) (*ChatResponse, error) {
 
 		var chunk sseChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			log.GetGlobal().WithSource("llm").Warn("SSE chunk parse error — skipping",
+				"data", data, "error", err.Error())
 			continue
 		}
 
@@ -309,7 +330,13 @@ func parseSSE(ctx context.Context, reader io.Reader) (*ChatResponse, error) {
 				ToolCalls:        finalToolCalls,
 			}, ErrPartialResponse
 		}
-		return nil, fmt.Errorf("SSE parse error: %w", err)
+		// For any other scanner error (broken pipe, connection reset, etc.),
+		// return the partial content so the caller can preserve it.
+		return &ChatResponse{
+			Content:          content.String(),
+			ReasoningContent: reasoningContent.String(),
+			ToolCalls:        finalToolCalls,
+		}, fmt.Errorf("%w: %w", ErrSSEParseError, err)
 	}
 
 	return &ChatResponse{

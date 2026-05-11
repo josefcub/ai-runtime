@@ -3,7 +3,9 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,7 +53,7 @@ func TestChatPlainTextResponse(t *testing.T) {
 
 	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
 	ctx := context.Background()
-	resp, err := client.Chat(ctx, []Message{{Role: "user", Content: "hi"}}, nil, 100)
+	resp, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -91,7 +93,7 @@ func TestChatToolCallsResponse(t *testing.T) {
 
 	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
 	ctx := context.Background()
-	resp, err := client.Chat(ctx, []Message{{Role: "user", Content: "view foo.go"}}, nil, 100)
+	resp, err := client.Chat(ctx, []Message{NewTextMessage("user", "view foo.go")}, nil, 100)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -142,7 +144,7 @@ func TestChatMultipleToolCalls(t *testing.T) {
 
 	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
 	ctx := context.Background()
-	resp, err := client.Chat(ctx, []Message{{Role: "user", Content: "search"}}, nil, 100)
+	resp, err := client.Chat(ctx, []Message{NewTextMessage("user", "search")}, nil, 100)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -170,7 +172,7 @@ func TestChatAPIKey(t *testing.T) {
 
 	client := New(srv.URL, "test-model", "secret-key-123", 5*time.Second, t.TempDir())
 	ctx := context.Background()
-	_, err := client.Chat(ctx, []Message{{Role: "user", Content: "hi"}}, nil, 100)
+	_, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -193,7 +195,7 @@ func TestChatEmptyAPIKey(t *testing.T) {
 
 	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
 	ctx := context.Background()
-	_, err := client.Chat(ctx, []Message{{Role: "user", Content: "hi"}}, nil, 100)
+	_, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -212,7 +214,7 @@ func TestChatServerError(t *testing.T) {
 
 	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
 	ctx := context.Background()
-	_, err := client.Chat(ctx, []Message{{Role: "user", Content: "hi"}}, nil, 100)
+	_, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -234,7 +236,7 @@ func TestChatRequestContainsTools(t *testing.T) {
 	toolsJSON := json.RawMessage(`[{"type":"function","function":{"name":"test_tool"}}]`)
 	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
 	ctx := context.Background()
-	_, err := client.Chat(ctx, []Message{{Role: "user", Content: "hi"}}, toolsJSON, 500)
+	_, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, toolsJSON, 500)
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -264,7 +266,7 @@ func TestChatContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := client.Chat(ctx, []Message{{Role: "user", Content: "hi"}}, nil, 100)
+	_, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
 	if err == nil {
 		t.Fatal("expected error from cancelled context, got nil")
 	}
@@ -298,7 +300,7 @@ func TestChatPartialResponseOnCancellation(t *testing.T) {
 	// Start chat in goroutine
 	done := make(chan error, 1)
 	go func() {
-		_, err := client.Chat(ctx, []Message{{Role: "user", Content: "hi"}}, nil, 100)
+		_, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
 		done <- err
 	}()
 
@@ -321,127 +323,317 @@ func TestChatPartialResponseOnCancellation(t *testing.T) {
 	}
 }
 
-func TestChatPartialResponseDebugFile(t *testing.T) {
-	// Run both scenarios (debug and non-debug) in one test to avoid
-	// any global logger state issues.
+func TestChatPartialResponseFile(t *testing.T) {
+	// Verify that partial response files are written regardless of log level.
+	// (Previously only written at debug level — now unconditional.)
 
-	// --- Scenario 1: Info level — no file should be written ---
-	{
-		tmpDir := t.TempDir()
-		logger, err := log.New(tmpDir, log.InfoLevel)
-		if err != nil {
-			t.Fatalf("create logger: %v", err)
-		}
-		log.SetGlobal(logger)
-		defer logger.Close()
+	tmpDir := t.TempDir()
+	logger, err := log.New(tmpDir, log.InfoLevel)
+	if err != nil {
+		t.Fatalf("create logger: %v", err)
+	}
+	log.SetGlobal(logger)
+	defer logger.Close()
 
-		var connected atomic.Bool
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"hello"}}]}`)
-			flusher, _ := w.(http.Flusher)
-			flusher.Flush()
-			connected.Store(true)
-			<-r.Context().Done()
-		}))
-		defer srv.Close()
+	var connected atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, `data: {"choices":[{"delta":{"reasoning_content":"thinking..."}}]}`)
+		fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"hello"}}]}`)
+		flusher, _ := w.(http.Flusher)
+		flusher.Flush()
+		connected.Store(true)
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
 
-		logDir := t.TempDir()
-		client := New(srv.URL, "test-model", "", 5*time.Second, logDir)
+	logDir := t.TempDir()
+	client := New(srv.URL, "test-model", "", 5*time.Second, logDir)
 
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan error, 1)
-		go func() {
-			_, err := client.Chat(ctx, []Message{{Role: "user", Content: "hi"}}, nil, 100)
-			done <- err
-		}()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
+		done <- err
+	}()
 
-		for i := 0; i < 100 && !connected.Load(); i++ {
-			time.Sleep(10 * time.Millisecond)
-		}
-		time.Sleep(50 * time.Millisecond)
-		cancel()
-		<-done
-
-		files, _ := os.ReadDir(logDir)
-		for _, f := range files {
-			if strings.HasPrefix(f.Name(), "partial-") {
-				t.Errorf("expected no partial response file at info level, found: %s", f.Name())
-			}
-		}
+	for i := 0; i < 100 && !connected.Load(); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !connected.Load() {
+		t.Fatal("server never sent partial data")
+	}
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	err = <-done
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
 	}
 
-	// --- Scenario 2: Debug level — file should be written ---
-	{
-		tmpDir := t.TempDir()
-		logger, err := log.New(tmpDir, log.DebugLevel)
-		if err != nil {
-			t.Fatalf("create debug logger: %v", err)
-		}
-		log.SetGlobal(logger)
-		defer logger.Close()
+	// Check that a partial response file was created
+	files, err := os.ReadDir(logDir)
+	if err != nil {
+		t.Fatalf("read log dir: %v", err)
+	}
 
-		var connected atomic.Bool
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintln(w, `data: {"choices":[{"delta":{"reasoning_content":"thinking..."}}]}`)
-			fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"hello"}}]}`)
-			flusher, _ := w.(http.Flusher)
-			flusher.Flush()
-			connected.Store(true)
-			<-r.Context().Done()
-		}))
-		defer srv.Close()
-
-		logDir := t.TempDir()
-		client := New(srv.URL, "test-model", "", 5*time.Second, logDir)
-
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan error, 1)
-		go func() {
-			_, err := client.Chat(ctx, []Message{{Role: "user", Content: "hi"}}, nil, 100)
-			done <- err
-		}()
-
-		for i := 0; i < 100 && !connected.Load(); i++ {
-			time.Sleep(10 * time.Millisecond)
-		}
-		if !connected.Load() {
-			t.Fatal("server never sent partial data")
-		}
-		time.Sleep(50 * time.Millisecond)
-		cancel()
-		<-done
-
-		// Check that a partial response file was created
-		files, err := os.ReadDir(logDir)
-		if err != nil {
-			t.Fatalf("read log dir: %v", err)
-		}
-
-		var foundPartial bool
-		for _, f := range files {
-			if strings.HasPrefix(f.Name(), "partial-") && strings.HasSuffix(f.Name(), ".log") {
-				foundPartial = true
-				data, err := os.ReadFile(filepath.Join(logDir, f.Name()))
-				if err != nil {
-					t.Fatalf("read partial file: %v", err)
-				}
-				content := string(data)
-				if !strings.Contains(content, "thinking...") {
-					t.Errorf("expected reasoning content in partial file, got: %s", content)
-				}
-				if !strings.Contains(content, "hello") {
-					t.Errorf("expected text content in partial file, got: %s", content)
-				}
-				break
+	var foundPartial bool
+	for _, f := range files {
+		if strings.HasPrefix(f.Name(), "partial-") && strings.HasSuffix(f.Name(), ".log") {
+			foundPartial = true
+			data, err := os.ReadFile(filepath.Join(logDir, f.Name()))
+			if err != nil {
+				t.Fatalf("read partial file: %v", err)
 			}
+			content := string(data)
+			if !strings.Contains(content, "thinking...") {
+				t.Errorf("expected reasoning content in partial file, got: %s", content)
+			}
+			if !strings.Contains(content, "hello") {
+				t.Errorf("expected text content in partial file, got: %s", content)
+			}
+			break
 		}
-		if !foundPartial {
-			t.Errorf("no partial response file found in %s", logDir)
+	}
+	if !foundPartial {
+		t.Errorf("no partial response file found in %s", logDir)
+	}
+}
+
+func TestNewTextMessage(t *testing.T) {
+	msg := NewTextMessage("user", "hello world")
+
+	if msg.Role != "user" {
+		t.Errorf("expected role 'user', got %q", msg.Role)
+	}
+
+	// Content should be a valid JSON string
+	var content string
+	if err := json.Unmarshal(msg.Content, &content); err != nil {
+		t.Fatalf("Content is not a valid JSON string: %v", err)
+	}
+	if content != "hello world" {
+		t.Errorf("expected 'hello world', got %q", content)
+	}
+}
+
+func TestNewTextMessageEscaping(t *testing.T) {
+	// Verify that special characters are properly JSON-escaped
+	msg := NewTextMessage("user", `hello "world" with \ backslash`)
+
+	var content string
+	if err := json.Unmarshal(msg.Content, &content); err != nil {
+		t.Fatalf("Content is not a valid JSON string: %v", err)
+	}
+	if content != `hello "world" with \ backslash` {
+		t.Errorf("expected escaped content, got %q", content)
+	}
+}
+
+func TestNewTextMessageNewlines(t *testing.T) {
+	// Newlines and other control characters must be escaped
+	msg := NewTextMessage("user", "line1\nline2\ttab\r\ncrlf")
+
+	var content string
+	if err := json.Unmarshal(msg.Content, &content); err != nil {
+		t.Fatalf("Content is not a valid JSON string: %v", err)
+	}
+	if content != "line1\nline2\ttab\r\ncrlf" {
+		t.Errorf("expected control chars preserved, got %q", content)
+	}
+}
+
+func TestMessageMarshalPlainText(t *testing.T) {
+	// Verify that a text message marshals Content as a JSON string (not array)
+	msg := NewTextMessage("user", "plain text")
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	// Content should be a JSON string, not an array
+	contentStr := string(parsed["content"])
+	if !strings.HasPrefix(contentStr, `"`) {
+		t.Errorf("expected Content to be a JSON string, got: %s", contentStr)
+	}
+}
+
+func TestMessageMarshalMultimodal(t *testing.T) {
+	// Verify that a multimodal message marshals Content as a JSON array
+	contentParts := json.RawMessage(`[{"type":"text","text":"see this"},{"type":"image_url","image_url":{"url":"data:image/png;base64,abc"}}]`)
+
+	msg := Message{
+		Role:    "tool",
+		Content: contentParts,
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	// Content should be a JSON array
+	contentStr := string(parsed["content"])
+	if !strings.HasPrefix(contentStr, `[`) {
+		t.Errorf("expected Content to be a JSON array, got: %s", contentStr)
+	}
+}
+
+func TestChatRequestWithMultimodalContent(t *testing.T) {
+	// End-to-end: verify the HTTP request body has correct content-parts format
+	var receivedBody map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&receivedBody)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
+	ctx := context.Background()
+
+	// Send a message with multimodal content (content parts array)
+	contentParts := json.RawMessage(`[{"type":"text","text":"image loaded"},{"type":"image_url","image_url":{"url":"data:image/png;base64,test123"}}]`)
+	_, err := client.Chat(ctx, []Message{
+		NewTextMessage("user", "show me this"),
+		{Role: "tool", Content: contentParts},
+	}, nil, 100)
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+
+	// Verify the request was sent with correct messages
+	msgs, ok := receivedBody["messages"].([]interface{})
+	if !ok {
+		t.Fatal("expected messages to be an array")
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+
+	// Second message should have content as an array
+	msg2, ok := msgs[1].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected second message to be an object")
+	}
+	contentArr, ok := msg2["content"].([]interface{})
+	if !ok {
+		t.Errorf("expected content to be an array for multimodal message, got: %T", msg2["content"])
+	} else {
+		if len(contentArr) != 2 {
+			t.Errorf("expected 2 content parts, got %d", len(contentArr))
 		}
+	}
+}
+
+func TestChatPartialResponseOnBrokenPipe(t *testing.T) {
+	// Test parseSSE directly with a reader that errors mid-stream.
+	// This simulates a broken pipe / connection reset scenario.
+	ctx := context.Background()
+
+	// Build a reader that returns data then errors
+	data := `data: {"choices":[{"delta":{"content":"partial"}}]}
+data: {"choices":[{"delta":{"content":" data"}}]}
+`
+	r := &erroringReader{
+		reader: strings.NewReader(data),
+		errAt:  len(data) - 10, // error partway through
+		read:   0,
+	}
+
+	resp, err := parseSSE(ctx, r)
+	if err == nil {
+		t.Fatal("expected error from broken stream, got nil")
+	}
+	// Should be ErrSSEParseError, not ErrPartialResponse
+	if errors.Is(err, ErrPartialResponse) {
+		t.Errorf("expected ErrSSEParseError, got ErrPartialResponse")
+	}
+
+	// Partial content should be preserved
+	if resp == nil {
+		t.Fatal("expected partial ChatResponse, got nil")
+	}
+	if resp.Content != "partial data" {
+		t.Errorf("expected content 'partial data', got %q", resp.Content)
+	}
+}
+
+// erroringReader returns data until errAt bytes, then returns a fixed error.
+type erroringReader struct {
+	reader io.Reader
+	errAt  int
+	read   int
+}
+
+func (r *erroringReader) Read(p []byte) (int, error) {
+	if r.read >= r.errAt {
+		return 0, fmt.Errorf("connection reset by peer")
+	}
+	n, err := r.reader.Read(p)
+	r.read += n
+	if err != nil {
+		return n, fmt.Errorf("connection reset by peer")
+	}
+	return n, nil
+}
+
+func TestChatChunkParseErrorWarning(t *testing.T) {
+	// Server sends a malformed chunk followed by valid data.
+	// The malformed chunk should be logged as a warning and skipped.
+	tmpDir := t.TempDir()
+	logger, err := log.New(tmpDir, log.DebugLevel)
+	if err != nil {
+		t.Fatalf("create logger: %v", err)
+	}
+	log.SetGlobal(logger)
+	defer logger.Close()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		// Send malformed chunk
+		fmt.Fprintln(w, `data: {not valid json}`)
+		// Send valid chunk
+		fmt.Fprintln(w, `data: {"choices":[{"delta":{"content":"ok"}}]}`)
+		fmt.Fprintln(w, `data: [DONE]`)
+		flusher, _ := w.(http.Flusher)
+		flusher.Flush()
+	}))
+	defer srv.Close()
+
+	logDir := t.TempDir()
+	client := New(srv.URL, "test-model", "", 5*time.Second, logDir)
+	ctx := context.Background()
+
+	resp, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
+	if err != nil {
+		t.Fatalf("Chat failed: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Errorf("expected 'ok', got %q", resp.Content)
+	}
+
+	// Verify a warning was logged for the malformed chunk
+	logFile, err := os.ReadFile(filepath.Join(tmpDir, "harness.log"))
+	if err != nil {
+		t.Fatalf("read log file: %v", err)
+	}
+	if !strings.Contains(string(logFile), "SSE chunk parse error") {
+		t.Errorf("expected warning log for chunk parse error, got: %s", string(logFile))
 	}
 }
 

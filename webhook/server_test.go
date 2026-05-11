@@ -539,3 +539,39 @@ func TestWebhook_BodyTooLarge(t *testing.T) {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
 	}
 }
+
+func TestWebhook_ImageAttachmentPassthrough(t *testing.T) {
+	_, q, _, ts := newTestServer(t, 64)
+
+	payload := map[string]interface{}{
+		"channel": "test-ch",
+		"message": "what is this image",
+		"image_attachment": map[string]string{
+			"data":      "iVBORw0KGgo=",
+			"mime_type": "image/png",
+		},
+	}
+	body, _ := json.Marshal(payload)
+
+	resp, err := http.Post(ts.URL+"/webhook", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+	}
+
+	// Check the queued message has the image attachment
+	msg, ok := q.Dequeue()
+	if !ok {
+		t.Fatal("expected message in queue")
+	}
+	if msg.ImageAttachment.Data != "iVBORw0KGgo=" {
+		t.Errorf("data = %q, want %q", msg.ImageAttachment.Data, "iVBORw0KGgo=")
+	}
+	if msg.ImageAttachment.MIMEType != "image/png" {
+		t.Errorf("mime_type = %q, want %q", msg.ImageAttachment.MIMEType, "image/png")
+	}
+}

@@ -23,11 +23,27 @@ const (
 
 // ConversationMessage is a single message in the conversation history.
 type ConversationMessage struct {
-	Role              MessageRole `json:"role"`
-	Content           string      `json:"content"`
-	ReasoningContent  string      `json:"reasoning_content,omitempty"`
-	ToolCalls         []ToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID        string      `json:"tool_call_id,omitempty"`
+	Role             MessageRole       `json:"role"`
+	Content          string            `json:"content"`
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall        `json:"tool_calls,omitempty"`
+	ToolCallID       string            `json:"tool_call_id,omitempty"`
+	Attachments      []ImageAttachment `json:"attachments,omitempty"`
+}
+
+// ImageAttachment holds base64-encoded image data for inclusion in LLM vision requests.
+type ImageAttachment struct {
+	Data     string `json:"data"`      // base64-encoded image bytes (no data URI prefix)
+	MIMEType string `json:"mime_type"` // e.g. "image/png", "image/jpeg"
+}
+
+// ToLLMContentPart returns the OpenAI vision API content part for this image.
+func (a *ImageAttachment) ToLLMContentPart() map[string]interface{} {
+	prefix := "data:" + a.MIMEType + ";base64," + a.Data
+	return map[string]interface{}{
+		"type":      "image_url",
+		"image_url": map[string]interface{}{"url": prefix},
+	}
 }
 
 // ToolCall represents a tool invocation request from the LLM.
@@ -192,7 +208,7 @@ func (m *Manager) SaveAll() error {
 // DrainAndSave appends a pending inbound message to the session for the given
 // channel (creating it if needed), then atomically persists the session to disk.
 // This is used during graceful shutdown to flush queued messages without calling the LLM.
-func (m *Manager) DrainAndSave(channelID, messageText string) error {
+func (m *Manager) DrainAndSave(channelID, messageText string, attachment ImageAttachment) error {
 	m.mu.Lock()
 	s, ok := m.sessions[channelID]
 	if !ok {
@@ -205,10 +221,14 @@ func (m *Manager) DrainAndSave(channelID, messageText string) error {
 		}
 		m.sessions[channelID] = s
 	}
-	s.Messages = append(s.Messages, ConversationMessage{
+	msg := ConversationMessage{
 		Role:    RoleUser,
 		Content: messageText,
-	})
+	}
+	if attachment.Data != "" {
+		msg.Attachments = []ImageAttachment{attachment}
+	}
+	s.Messages = append(s.Messages, msg)
 	s.UpdatedAt = time.Now()
 
 	data, err := json.MarshalIndent(s, "", "  ")
