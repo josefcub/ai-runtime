@@ -24,13 +24,15 @@ type Server struct {
 	q            *queue.Queue
 	sessions     *session.Manager
 	logEvents    bool
+	logger       *log.Logger
 
 	server   *http.Server
 	shutting atomic.Bool
 }
 
 // NewServer creates a new webhook HTTP server.
-func NewServer(host string, port int, webhookPath string, maxBodyBytes int, q *queue.Queue, sessions *session.Manager, logChannelEvents bool) *Server {
+// logger may be nil (logging calls are no-ops).
+func NewServer(host string, port int, webhookPath string, maxBodyBytes int, q *queue.Queue, sessions *session.Manager, logChannelEvents bool, logger *log.Logger) *Server {
 	return &Server{
 		host:         host,
 		port:         port,
@@ -39,6 +41,7 @@ func NewServer(host string, port int, webhookPath string, maxBodyBytes int, q *q
 		q:            q,
 		sessions:     sessions,
 		logEvents:    logChannelEvents,
+		logger:       logger,
 	}
 }
 
@@ -52,19 +55,23 @@ func (s *Server) Start(ctx context.Context) error {
 		Handler: mux,
 	}
 
-	logger := log.GetGlobal().WithSource("plugin.webhook")
+	logger := s.logger
 
 	ln, err := net.Listen("tcp", s.server.Addr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	logger.Info("webhook server listening", "addr", s.server.Addr)
+	if logger != nil {
+		logger.Info("webhook server listening", "addr", s.server.Addr)
+	}
 
 	// Start serving in background
 	go func() {
 		if err := s.server.Serve(ln); err != nil && err != http.ErrServerClosed {
-			logger.Error("webhook server error", "error", err.Error())
+			if logger != nil {
+				logger.Error("webhook server error", "error", err.Error())
+			}
 		}
 	}()
 
@@ -84,7 +91,7 @@ func (s *Server) Stop() error {
 
 // handleWebhook processes inbound webhook POST requests.
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
-	logger := log.GetGlobal().WithSource("plugin.webhook")
+	logger := s.logger
 
 	// Return 503 if shutting down
 	if s.shutting.Load() {
@@ -144,10 +151,12 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	// Ensure session exists for this channel (creates if new)
 	s.sessions.Get(body.Channel)
 
-	if s.logEvents {
+	if s.logEvents && logger != nil {
 		logger.Info("channel connected", "channel", body.Channel)
 	}
-	logger.Info("webhook message received", "channel", body.Channel)
+	if logger != nil {
+		logger.Info("webhook message received", "channel", body.Channel)
+	}
 
 	msg := queue.Message{
 		ChannelID:   body.Channel,
@@ -162,7 +171,7 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	if rejection != "" {
 		// If a callback URL was provided, send the rejection notification there
 		if body.CallbackURL != "" {
-			_ = SendCallback(body.Channel, rejection, body.CallbackURL)
+			_ = SendCallback(body.Channel, rejection, body.CallbackURL, s.logger)
 		}
 		w.WriteHeader(http.StatusTooManyRequests)
 		w.Write([]byte(rejection))

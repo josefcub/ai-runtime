@@ -51,7 +51,7 @@ func TestChatPlainTextResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
+	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir(), nil)
 	ctx := context.Background()
 	resp, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
 	if err != nil {
@@ -91,7 +91,7 @@ func TestChatToolCallsResponse(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
+	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir(), nil)
 	ctx := context.Background()
 	resp, err := client.Chat(ctx, []Message{NewTextMessage("user", "view foo.go")}, nil, 100)
 	if err != nil {
@@ -142,7 +142,7 @@ func TestChatMultipleToolCalls(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
+	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir(), nil)
 	ctx := context.Background()
 	resp, err := client.Chat(ctx, []Message{NewTextMessage("user", "search")}, nil, 100)
 	if err != nil {
@@ -170,7 +170,7 @@ func TestChatAPIKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, "test-model", "secret-key-123", 5*time.Second, t.TempDir())
+	client := New(srv.URL, "test-model", "secret-key-123", 5*time.Second, t.TempDir(), nil)
 	ctx := context.Background()
 	_, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
 	if err != nil {
@@ -193,7 +193,7 @@ func TestChatEmptyAPIKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
+	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir(), nil)
 	ctx := context.Background()
 	_, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
 	if err != nil {
@@ -212,7 +212,7 @@ func TestChatServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
+	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir(), nil)
 	ctx := context.Background()
 	_, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)
 	if err == nil {
@@ -234,7 +234,7 @@ func TestChatRequestContainsTools(t *testing.T) {
 	defer srv.Close()
 
 	toolsJSON := json.RawMessage(`[{"type":"function","function":{"name":"test_tool"}}]`)
-	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
+	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir(), nil)
 	ctx := context.Background()
 	_, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, toolsJSON, 500)
 	if err != nil {
@@ -262,7 +262,7 @@ func TestChatContextCancellation(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
+	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir(), nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
@@ -293,7 +293,7 @@ func TestChatPartialResponseOnCancellation(t *testing.T) {
 	defer srv.Close()
 
 	logDir := t.TempDir()
-	client := New(srv.URL, "test-model", "", 5*time.Second, logDir)
+	client := New(srv.URL, "test-model", "", 5*time.Second, logDir, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -332,7 +332,6 @@ func TestChatPartialResponseFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create logger: %v", err)
 	}
-	log.SetGlobal(logger)
 	defer logger.Close()
 
 	var connected atomic.Bool
@@ -349,7 +348,7 @@ func TestChatPartialResponseFile(t *testing.T) {
 	defer srv.Close()
 
 	logDir := t.TempDir()
-	client := New(srv.URL, "test-model", "", 5*time.Second, logDir)
+	client := New(srv.URL, "test-model", "", 5*time.Second, logDir, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -501,7 +500,7 @@ func TestChatRequestWithMultimodalContent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir())
+	client := New(srv.URL, "test-model", "", 5*time.Second, t.TempDir(), nil)
 	ctx := context.Background()
 
 	// Send a message with multimodal content (content parts array)
@@ -553,7 +552,7 @@ data: {"choices":[{"delta":{"content":" data"}}]}
 		read:   0,
 	}
 
-	resp, err := parseSSE(ctx, r)
+	resp, err := parseSSE(ctx, r, nil)
 	if err == nil {
 		t.Fatal("expected error from broken stream, got nil")
 	}
@@ -598,7 +597,6 @@ func TestChatChunkParseErrorWarning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create logger: %v", err)
 	}
-	log.SetGlobal(logger)
 	defer logger.Close()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -616,7 +614,7 @@ func TestChatChunkParseErrorWarning(t *testing.T) {
 	defer srv.Close()
 
 	logDir := t.TempDir()
-	client := New(srv.URL, "test-model", "", 5*time.Second, logDir)
+	client := New(srv.URL, "test-model", "", 5*time.Second, logDir, logger)
 	ctx := context.Background()
 
 	resp, err := client.Chat(ctx, []Message{NewTextMessage("user", "hi")}, nil, 100)

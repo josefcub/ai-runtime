@@ -25,11 +25,13 @@ type Client struct {
 	timeout time.Duration
 	http    *http.Client
 	logDir  string
+	logger  *log.Logger
 }
 
 // New creates a new LLM client.
 // logDir is used to write partial response files when the LLM stream is interrupted.
-func New(baseURL, model, apiKey string, timeout time.Duration, logDir string) *Client {
+// logger may be nil (logging calls are no-ops).
+func New(baseURL, model, apiKey string, timeout time.Duration, logDir string, logger *log.Logger) *Client {
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		model:   model,
@@ -39,6 +41,7 @@ func New(baseURL, model, apiKey string, timeout time.Duration, logDir string) *C
 			Timeout: timeout,
 		},
 		logDir: logDir,
+		logger: logger,
 	}
 }
 
@@ -116,7 +119,9 @@ func (c *Client) Chat(ctx context.Context, messages []Message, toolsJSON json.Ra
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
-	log.GetGlobal().WithSource("llm").Debug("LLM API request payload", "body", string(data))
+	if c.logger != nil {
+		c.logger.WithSource("llm").Debug("LLM API request payload", "body", string(data))
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -129,7 +134,7 @@ func (c *Client) Chat(ctx context.Context, messages []Message, toolsJSON json.Ra
 		return nil, fmt.Errorf("LLM API error %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
 
-	result, err := parseSSE(ctx, resp.Body)
+	result, err := parseSSE(ctx, resp.Body, c.logger)
 	if err != nil && result != nil {
 		c.writePartialResponse(result)
 		if errors.Is(err, ErrPartialResponse) {
@@ -170,23 +175,29 @@ func (c *Client) writePartialResponse(resp *ChatResponse) {
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		log.GetGlobal().WithSource("llm").Error("failed to create partial response file",
-			"file", path, "error", err.Error())
+		if c.logger != nil {
+			c.logger.WithSource("llm").Error("failed to create partial response file",
+				"file", path, "error", err.Error())
+		}
 		return
 	}
 	defer f.Close()
 
 	if _, err := f.WriteString(buf.String()); err != nil {
-		log.GetGlobal().WithSource("llm").Error("failed to write partial response",
-			"file", path, "error", err.Error())
+		if c.logger != nil {
+			c.logger.WithSource("llm").Error("failed to write partial response",
+				"file", path, "error", err.Error())
+		}
 		return
 	}
 
-	log.GetGlobal().WithSource("llm").Info("partial response saved",
-		"file", path,
-		"content_bytes", fmt.Sprintf("%d", len(resp.Content)),
-		"reasoning_bytes", fmt.Sprintf("%d", len(resp.ReasoningContent)),
-	)
+	if c.logger != nil {
+		c.logger.WithSource("llm").Info("partial response saved",
+			"file", path,
+			"content_bytes", fmt.Sprintf("%d", len(resp.Content)),
+			"reasoning_bytes", fmt.Sprintf("%d", len(resp.ReasoningContent)),
+		)
+	}
 }
 
 // --- Internal types ---
@@ -231,7 +242,7 @@ type sseFunctionDelta struct {
 // parseSSE reads an SSE stream and aggregates the response.
 // If ctx is cancelled mid-stream, the accumulated content is returned along with
 // ErrPartialResponse so the caller can preserve it (e.g. write to a debug logfile).
-func parseSSE(ctx context.Context, reader io.Reader) (*ChatResponse, error) {
+func parseSSE(ctx context.Context, reader io.Reader, logger *log.Logger) (*ChatResponse, error) {
 	scanner := bufio.NewScanner(reader)
 	// Increase buffer for large SSE chunks
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
@@ -267,8 +278,10 @@ func parseSSE(ctx context.Context, reader io.Reader) (*ChatResponse, error) {
 
 		var chunk sseChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			log.GetGlobal().WithSource("llm").Warn("SSE chunk parse error — skipping",
-				"data", data, "error", err.Error())
+			if logger != nil {
+				logger.WithSource("llm").Warn("SSE chunk parse error — skipping",
+					"data", data, "error", err.Error())
+			}
 			continue
 		}
 

@@ -137,30 +137,6 @@ func (l *Logger) Error(msg string, kvs ...string) {
 	l.Log(ErrorLevel, msg, kvs...)
 }
 
-var (
-	globalMu sync.RWMutex
-	global   *Logger
-)
-
-// SetGlobal registers the application-wide Logger.
-// Call this once during startup (main.go). Subsequent calls overwrite the previous value.
-func SetGlobal(logger *Logger) {
-	globalMu.Lock()
-	defer globalMu.Unlock()
-	global = logger
-}
-
-// GetGlobal returns the application-wide Logger.
-// If SetGlobal has not been called, it returns a no-op Logger that discards all output.
-func GetGlobal() *Logger {
-	globalMu.RLock()
-	defer globalMu.RUnlock()
-	if global != nil {
-		return global
-	}
-	return &Logger{Level: ErrorLevel} // no-op: discards everything
-}
-
 // WithSource returns a copy of the Logger with the given source tag.
 func (l *Logger) WithSource(src string) *Logger {
 	return &Logger{

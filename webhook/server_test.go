@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,10 +21,10 @@ func newTestServer(t *testing.T, maxDepth int) (*Server, *queue.Queue, *session.
 	t.Helper()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
-	q := queue.New(maxDepth)
+	q := queue.New(maxDepth, nil)
 	sess := session.NewManager(stateDir)
 
-	srv := NewServer("127.0.0.1", 0, "/webhook", 1048576, q, sess, true)
+	srv := NewServer("127.0.0.1", 0, "/webhook", 1048576, q, sess, true, nil)
 
 	// Create a test HTTP server wrapping the webhook handler
 	h := http.NewServeMux()
@@ -219,11 +220,13 @@ func TestWebhook_Backpressure(t *testing.T) {
 func TestWebhook_BackpressureSendsCallback(t *testing.T) {
 	var received CallbackPayload
 	var callbackMu sync.Mutex
+	var callbackReceived atomic.Bool
 
 	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callbackMu.Lock()
 		defer callbackMu.Unlock()
 		json.NewDecoder(r.Body).Decode(&received)
+		callbackReceived.Store(true)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer callbackServer.Close()
@@ -260,7 +263,12 @@ func TestWebhook_BackpressureSendsCallback(t *testing.T) {
 	}
 
 	// Wait for callback to arrive
-	time.Sleep(200 * time.Millisecond)
+	for i := 0; i < 100 && !callbackReceived.Load(); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !callbackReceived.Load() {
+		t.Fatal("callback was not received")
+	}
 
 	callbackMu.Lock()
 	defer callbackMu.Unlock()
@@ -509,11 +517,11 @@ func TestWebhook_ChannelIDAtLimit(t *testing.T) {
 
 func TestWebhook_BodyTooLarge(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "state")
-	q := queue.New(64)
+	q := queue.New(64, nil)
 	sess := session.NewManager(stateDir)
 
 	// Create server with 100-byte limit
-	srv := NewServer("127.0.0.1", 0, "/webhook", 100, q, sess, true)
+	srv := NewServer("127.0.0.1", 0, "/webhook", 100, q, sess, true, nil)
 
 	h := http.NewServeMux()
 	h.HandleFunc("/webhook", srv.handleWebhook)

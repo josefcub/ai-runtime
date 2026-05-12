@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/agent-project/harness/llm"
-	"github.com/agent-project/harness/log"
 	"github.com/agent-project/harness/session"
 	"github.com/agent-project/harness/tools"
 )
@@ -96,22 +95,10 @@ func setupAgent(t *testing.T, mc *mockClient, contextTokens int, summarizeThresh
 		return "", fmt.Errorf("missing text")
 	})
 
-	return New(mc, reg, maxToolIterations, contextTokens, summarizeThreshold, summarizeKeepRecent, maxTokens, "Summarize the above conversation.", logToolCalls, logAgentReasoning, nil)
-}
-
-func initTestLogger(t *testing.T) {
-	t.Helper()
-	tmpDir := t.TempDir()
-	l, err := log.New(tmpDir, log.DebugLevel)
-	if err != nil {
-		t.Skipf("cannot init logger: %v", err)
-	}
-	l.Close()
-	log.SetGlobal(l)
+	return New(mc, reg, maxToolIterations, contextTokens, summarizeThreshold, summarizeKeepRecent, maxTokens, "Summarize the above conversation.", logToolCalls, logAgentReasoning, nil, nil)
 }
 
 func TestProcessPlainTextResponse(t *testing.T) {
-	initTestLogger(t)
 
 	mc := newMockClient()
 	mc.QueueResponse(&llm.ChatResponse{
@@ -141,8 +128,7 @@ func TestProcessPlainTextResponse(t *testing.T) {
 }
 
 func TestProcessToolCallLoop(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 
 	// First call: LLM decides to call "echo"
@@ -189,8 +175,7 @@ func TestProcessToolCallLoop(t *testing.T) {
 }
 
 func TestProcessMaxIterations(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 
 	// LLM keeps calling tools — should stop at max_tool_iterations
@@ -233,8 +218,7 @@ func TestProcessMaxIterations(t *testing.T) {
 }
 
 func TestProcessMaxIterationsSyntheticClosing(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 
 	// LLM keeps calling tools — exceeds max_tool_iterations (3)
@@ -289,8 +273,7 @@ func TestProcessMaxIterationsSyntheticClosing(t *testing.T) {
 }
 
 func TestProcessMaxIterationsNormalExitUnaffected(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 
 	// LLM calls a tool once, then gives final answer — no exhaustion
@@ -330,8 +313,7 @@ func TestProcessMaxIterationsNormalExitUnaffected(t *testing.T) {
 }
 
 func TestProcessToolError(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 
 	// First call: LLM calls a non-existent tool (will error)
@@ -372,8 +354,7 @@ func TestProcessToolError(t *testing.T) {
 }
 
 func TestProcessLLMError(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 	mc.QueueError(fmt.Errorf("connection refused"))
 
@@ -398,8 +379,7 @@ func TestProcessLLMError(t *testing.T) {
 }
 
 func TestProcessPartialResponse(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 	mc.QueuePartial(&llm.ChatResponse{
 		Content:          "This is a partial ",
@@ -445,8 +425,7 @@ func TestProcessPartialResponse(t *testing.T) {
 }
 
 func TestSummarizationTriggersAtThreshold(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 
 	// First call: summarization LLM call
@@ -509,8 +488,7 @@ func TestSummarizationTriggersAtThreshold(t *testing.T) {
 }
 
 func TestSummarizationFailure(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 
 	// First call: summarization LLM call fails
@@ -558,8 +536,7 @@ func TestSummarizationFailure(t *testing.T) {
 }
 
 func TestSummarizationSkippedWhenUnderThreshold(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 	mc.QueueResponse(&llm.ChatResponse{
 		Content:   "Done.",
@@ -648,8 +625,7 @@ func TestSplitMessagesKeepAll(t *testing.T) {
 }
 
 func TestSystemPromptPreserved(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 	mc.QueueResponse(&llm.ChatResponse{
 		Content:   "Done.",
@@ -682,8 +658,7 @@ func TestSystemPromptPreserved(t *testing.T) {
 }
 
 func TestMultipleToolCallsInOneTurn(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 
 	// First call: LLM calls echo twice
@@ -727,8 +702,7 @@ func TestMultipleToolCallsInOneTurn(t *testing.T) {
 }
 
 func TestProcessEmptyContentResponse(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 	mc.QueueResponse(&llm.ChatResponse{
 		Content:   "",
@@ -750,8 +724,7 @@ func TestProcessEmptyContentResponse(t *testing.T) {
 }
 
 func TestProcessWithImageAttachment(t *testing.T) {
-	initTestLogger(t)
-
+	
 	mc := newMockClient()
 	mc.QueueResponse(&llm.ChatResponse{
 		Content:   "I see a photo of a cat.",

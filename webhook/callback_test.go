@@ -18,7 +18,7 @@ func TestSendCallback_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := SendCallback("ch-1", "hello world", server.URL)
+	err := SendCallback("ch-1", "hello world", server.URL, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestSendCallback_Success(t *testing.T) {
 
 func TestSendCallback_NetworkError(t *testing.T) {
 	// Use an invalid URL to trigger a network error
-	err := SendCallback("ch-2", "test", "http://192.0.2.1:99999/callback")
+	err := SendCallback("ch-2", "test", "http://192.0.2.1:99999/callback", nil)
 	if err == nil {
 		t.Fatal("expected error for network failure, got nil")
 	}
@@ -49,7 +49,7 @@ func TestSendCallback_Non2xx(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := SendCallback("ch-3", "test message", server.URL)
+	err := SendCallback("ch-3", "test message", server.URL, nil)
 	if err == nil {
 		t.Fatal("expected error for non-2xx response, got nil")
 	}
@@ -68,7 +68,7 @@ func TestSendCallback_EmptyMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := SendCallback("ch-4", "", server.URL)
+	err := SendCallback("ch-4", "", server.URL, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestSendCallback_Shorthand2xx(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := SendCallback("ch-5", "created", server.URL)
+	err := SendCallback("ch-5", "created", server.URL, nil)
 	if err != nil {
 		t.Fatalf("unexpected error for 201: %v", err)
 	}

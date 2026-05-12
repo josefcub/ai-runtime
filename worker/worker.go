@@ -37,12 +37,14 @@ type Worker struct {
 	basePrompt   string
 	workingDir   string
 	pollInterval time.Duration
+	logger       *log.Logger
 }
 
 // New creates a new Worker.
 // basePrompt is the system prompt from the INI config (required).
 // workingDir is the sandbox root where prompt files may reside.
-func New(q *queue.Queue, sessions *session.Manager, processor Processor, basePrompt, workingDir string) *Worker {
+// logger may be nil (logging calls are no-ops).
+func New(q *queue.Queue, sessions *session.Manager, processor Processor, basePrompt, workingDir string, logger *log.Logger) *Worker {
 	return &Worker{
 		q:            q,
 		sessions:     sessions,
@@ -50,6 +52,7 @@ func New(q *queue.Queue, sessions *session.Manager, processor Processor, basePro
 		basePrompt:   basePrompt,
 		workingDir:   workingDir,
 		pollInterval: 100 * time.Millisecond,
+		logger:       logger,
 	}
 }
 
@@ -80,12 +83,12 @@ func (w *Worker) buildSystemPrompt() string {
 // Messages are dequeued one at a time, processed through the agent, and
 // the result is sent via the callback URL if present.
 func (w *Worker) Run(ctx context.Context) {
-	logger := log.GetGlobal().WithSource("worker")
-
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("worker stopping")
+			if w.logger != nil {
+				w.logger.Info("worker stopping")
+			}
 			return
 		default:
 		}
@@ -104,12 +107,14 @@ func (w *Worker) Run(ctx context.Context) {
 
 // processMessage handles a single message: agent processing, session save, callback.
 func (w *Worker) processMessage(ctx context.Context, msg queue.Message) {
-	logger := log.GetGlobal().WithSource("worker")
+	logger := w.logger
 
-	logger.Info("processing message",
-		"channel", msg.ChannelID,
-		"callback_url", msg.CallbackURL,
-	)
+	if logger != nil {
+		logger.Info("processing message",
+			"channel", msg.ChannelID,
+			"callback_url", msg.CallbackURL,
+		)
+	}
 
 	// Get or create session for this channel
 	sess := w.sessions.Get(msg.ChannelID)
@@ -117,43 +122,51 @@ func (w *Worker) processMessage(ctx context.Context, msg queue.Message) {
 	// Process through the agent with composed system prompt
 	output, err := w.processor.Process(ctx, sess, msg.MessageText, w.buildSystemPrompt(), msg.ImageAttachment)
 	if err != nil {
-		logger.Error("agent processing failed",
-			"channel", msg.ChannelID,
-			"error", err.Error(),
-		)
+		if logger != nil {
+			logger.Error("agent processing failed",
+				"channel", msg.ChannelID,
+				"error", err.Error(),
+			)
+		}
 		// Send error as callback if URL is present
 		if msg.CallbackURL != "" {
 			callbackMsg := "Error: " + err.Error()
 			if output != "" {
 				callbackMsg += "\n\nPartial output:\n" + output
 			}
-			_ = webhook.SendCallback(msg.ChannelID, callbackMsg, msg.CallbackURL)
+			_ = webhook.SendCallback(msg.ChannelID, callbackMsg, msg.CallbackURL, w.logger)
 		}
 		// Save session to persist the user message before returning
 		if err := w.sessions.Save(sess); err != nil {
-			logger.Error("failed to save session on error",
-				"channel", msg.ChannelID,
-				"error", err.Error(),
-			)
+			if logger != nil {
+				logger.Error("failed to save session on error",
+					"channel", msg.ChannelID,
+					"error", err.Error(),
+				)
+			}
 		}
 		return
 	}
 
 	// Save session state
 	if err := w.sessions.Save(sess); err != nil {
-		logger.Error("failed to save session",
-			"channel", msg.ChannelID,
-			"error", err.Error(),
-		)
+		if logger != nil {
+			logger.Error("failed to save session",
+				"channel", msg.ChannelID,
+				"error", err.Error(),
+			)
+		}
 	}
 
 	// Send callback if URL is present
 	if msg.CallbackURL != "" {
-		if err := webhook.SendCallback(msg.ChannelID, output, msg.CallbackURL); err != nil {
-			logger.Error("callback failed",
-				"channel", msg.ChannelID,
-				"error", err.Error(),
-			)
+		if err := webhook.SendCallback(msg.ChannelID, output, msg.CallbackURL, w.logger); err != nil {
+			if logger != nil {
+				logger.Error("callback failed",
+					"channel", msg.ChannelID,
+					"error", err.Error(),
+				)
+			}
 		}
 	}
 }

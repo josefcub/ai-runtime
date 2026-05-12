@@ -24,9 +24,13 @@ type mockProcessor struct {
 	calls    []string
 	response string
 	err      error
+	done     chan struct{} // signaled after each Process() call completes
 }
 
 func (m *mockProcessor) Process(ctx context.Context, sess *session.Session, messageText, systemPrompt string, imageAtt session.ImageAttachment) (string, error) {
+	if m.done != nil {
+		defer func() { m.done <- struct{}{} }()
+	}
 	m.mu.Lock()
 	m.calls = append(m.calls, messageText)
 	m.mu.Unlock()
@@ -64,14 +68,14 @@ func newTestWorker(t *testing.T, processor Processor, workingDir string) (*Worke
 	t.Helper()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
-	q := queue.New(64)
+	q := queue.New(64, nil)
 	sess := session.NewManager(stateDir)
 
-	return New(q, sess, processor, "test system prompt", workingDir), q, sess
+	return New(q, sess, processor, "test system prompt", workingDir, nil), q, sess
 }
 
 func TestWorker_SingleMessage(t *testing.T) {
-	proc := &mockProcessor{response: "agent response"}
+	proc := &mockProcessor{response: "agent response", done: make(chan struct{}, 1)}
 	w, q, _ := newTestWorker(t, proc, t.TempDir())
 
 	// Enqueue a message
@@ -90,8 +94,8 @@ func TestWorker_SingleMessage(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait for processing
-	time.Sleep(500 * time.Millisecond)
+	// Wait for processing to complete
+	<-proc.done
 	cancel()
 	<-done
 
@@ -105,7 +109,7 @@ func TestWorker_SingleMessage(t *testing.T) {
 }
 
 func TestWorker_MultiChannelInterleaving(t *testing.T) {
-	proc := &mockProcessor{response: "ok"}
+	proc := &mockProcessor{response: "ok", done: make(chan struct{}, 5)}
 	w, q, _ := newTestWorker(t, proc, t.TempDir())
 
 	// Enqueue messages for different channels
@@ -125,7 +129,10 @@ func TestWorker_MultiChannelInterleaving(t *testing.T) {
 		close(done)
 	}()
 
-	time.Sleep(1 * time.Second)
+	// Wait for all 5 messages to be processed
+	for i := 0; i < 5; i++ {
+		<-proc.done
+	}
 	cancel()
 	<-done
 
@@ -158,7 +165,7 @@ func TestWorker_CallbackDelivery(t *testing.T) {
 	}))
 	defer callbackServer.Close()
 
-	proc := &mockProcessor{response: "callback response"}
+	proc := &mockProcessor{response: "callback response", done: make(chan struct{}, 1)}
 	w, q, _ := newTestWorker(t, proc, t.TempDir())
 
 	q.Enqueue(queue.Message{
@@ -176,7 +183,7 @@ func TestWorker_CallbackDelivery(t *testing.T) {
 		close(done)
 	}()
 
-	time.Sleep(800 * time.Millisecond)
+	<-proc.done
 	cancel()
 	<-done
 
@@ -192,7 +199,7 @@ func TestWorker_CallbackDelivery(t *testing.T) {
 }
 
 func TestWorker_NoCallbackURL(t *testing.T) {
-	proc := &mockProcessor{response: "no callback response"}
+	proc := &mockProcessor{response: "no callback response", done: make(chan struct{}, 1)}
 	w, q, _ := newTestWorker(t, proc, t.TempDir())
 
 	q.Enqueue(queue.Message{
@@ -210,7 +217,7 @@ func TestWorker_NoCallbackURL(t *testing.T) {
 		close(done)
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	<-proc.done
 	cancel()
 	<-done
 
@@ -236,7 +243,7 @@ func TestWorker_ProcessorError(t *testing.T) {
 	}))
 	defer callbackServer.Close()
 
-	proc := &mockProcessor{err: fmt.Errorf("processor error")}
+	proc := &mockProcessor{err: fmt.Errorf("processor error"), done: make(chan struct{}, 1)}
 	w, q, _ := newTestWorker(t, proc, t.TempDir())
 
 	q.Enqueue(queue.Message{
@@ -254,7 +261,7 @@ func TestWorker_ProcessorError(t *testing.T) {
 		close(done)
 	}()
 
-	time.Sleep(800 * time.Millisecond)
+	<-proc.done
 	cancel()
 	<-done
 
@@ -270,7 +277,7 @@ func TestWorker_ProcessorError(t *testing.T) {
 }
 
 func TestWorker_SessionCreated(t *testing.T) {
-	proc := &mockProcessor{response: "ok"}
+	proc := &mockProcessor{response: "ok", done: make(chan struct{}, 1)}
 	w, q, sess := newTestWorker(t, proc, t.TempDir())
 
 	q.Enqueue(queue.Message{
@@ -287,7 +294,7 @@ func TestWorker_SessionCreated(t *testing.T) {
 		close(done)
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	<-proc.done
 	cancel()
 	<-done
 
@@ -358,7 +365,7 @@ func TestWorker_ContextCancellation(t *testing.T) {
 }
 
 func TestWorker_SessionSaved(t *testing.T) {
-	proc := &mockProcessor{response: "saved"}
+	proc := &mockProcessor{response: "saved", done: make(chan struct{}, 1)}
 	w, q, sess := newTestWorker(t, proc, t.TempDir())
 
 	q.Enqueue(queue.Message{
@@ -375,7 +382,7 @@ func TestWorker_SessionSaved(t *testing.T) {
 		close(done)
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	<-proc.done
 	cancel()
 	<-done
 
@@ -397,7 +404,7 @@ func TestWorker_ConcurrentSafety(t *testing.T) {
 	var processed atomic.Int32
 	origProcess := proc
 	// Wrap processor to count
-	countingProc := &mockProcessor{response: "ok"}
+	countingProc := &mockProcessor{response: "ok", done: make(chan struct{}, 10)}
 	w.processor = countingProc
 
 	done := make(chan struct{})
@@ -414,7 +421,10 @@ func TestWorker_ConcurrentSafety(t *testing.T) {
 		})
 	}
 
-	time.Sleep(1 * time.Second)
+	// Wait for all 10 to be processed
+	for i := 0; i < 10; i++ {
+		<-countingProc.done
+	}
 	cancel()
 	<-done
 
@@ -430,8 +440,8 @@ func TestBuildSystemPrompt_NoFiles(t *testing.T) {
 	workingDir := t.TempDir()
 	_, _, _ = newTestWorker(t, &mockProcessor{}, workingDir)
 
-	w := New(queue.New(64), session.NewManager(filepath.Join(t.TempDir(), "state")),
-		&mockProcessor{}, "You are a robot.", workingDir)
+	w := New(queue.New(64, nil), session.NewManager(filepath.Join(t.TempDir(), "state")),
+		&mockProcessor{}, "You are a robot.", workingDir, nil)
 
 	prompt := w.buildSystemPrompt()
 	if prompt != "You are a robot." {
@@ -446,8 +456,8 @@ func TestBuildSystemPrompt_LoadsFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(workingDir, "SOUL.md"), []byte("Be kind and helpful."), 0644)
 	os.WriteFile(filepath.Join(workingDir, "MEMORY.md"), []byte("User prefers short answers."), 0644)
 
-	w := New(queue.New(64), session.NewManager(filepath.Join(t.TempDir(), "state")),
-		&mockProcessor{}, "Base prompt.", workingDir)
+	w := New(queue.New(64, nil), session.NewManager(filepath.Join(t.TempDir(), "state")),
+		&mockProcessor{}, "Base prompt.", workingDir, nil)
 
 	prompt := w.buildSystemPrompt()
 
@@ -476,8 +486,8 @@ func TestBuildSystemPrompt_FileOrder(t *testing.T) {
 	os.WriteFile(filepath.Join(workingDir, "USER.md"), []byte("user content"), 0644)
 	os.WriteFile(filepath.Join(workingDir, "MEMORY.md"), []byte("memory content"), 0644)
 
-	w := New(queue.New(64), session.NewManager(filepath.Join(t.TempDir(), "state")),
-		&mockProcessor{}, "base", workingDir)
+	w := New(queue.New(64, nil), session.NewManager(filepath.Join(t.TempDir(), "state")),
+		&mockProcessor{}, "base", workingDir, nil)
 
 	prompt := w.buildSystemPrompt()
 
@@ -504,8 +514,8 @@ func TestBuildSystemPrompt_SkipsMissingFiles(t *testing.T) {
 
 	os.WriteFile(filepath.Join(workingDir, "IDENTITY.md"), []byte("I am an agent."), 0644)
 
-	w := New(queue.New(64), session.NewManager(filepath.Join(t.TempDir(), "state")),
-		&mockProcessor{}, "base prompt", workingDir)
+	w := New(queue.New(64, nil), session.NewManager(filepath.Join(t.TempDir(), "state")),
+		&mockProcessor{}, "base prompt", workingDir, nil)
 
 	prompt := w.buildSystemPrompt()
 
@@ -532,8 +542,8 @@ func TestBuildSystemPrompt_SkipsEmptyFiles(t *testing.T) {
 	os.WriteFile(filepath.Join(workingDir, "SOUL.md"), []byte("   \n\n  "), 0644)
 	os.WriteFile(filepath.Join(workingDir, "IDENTITY.md"), []byte("real content"), 0644)
 
-	w := New(queue.New(64), session.NewManager(filepath.Join(t.TempDir(), "state")),
-		&mockProcessor{}, "base", workingDir)
+	w := New(queue.New(64, nil), session.NewManager(filepath.Join(t.TempDir(), "state")),
+		&mockProcessor{}, "base", workingDir, nil)
 
 	prompt := w.buildSystemPrompt()
 

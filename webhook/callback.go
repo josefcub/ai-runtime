@@ -21,9 +21,8 @@ type CallbackPayload struct {
 // On success (2xx), it returns nil.
 // On failure, it logs at error level (channel ID + HTTP status) and returns the error.
 // Full message details are only logged at debug level.
-func SendCallback(channelID, message, callbackURL string) error {
-	logger := log.GetGlobal().WithSource("plugin.webhook")
-
+// logger may be nil (logging calls are no-ops).
+func SendCallback(channelID, message, callbackURL string, logger *log.Logger) error {
 	payload, err := json.Marshal(CallbackPayload{
 		Channel: channelID,
 		Message: message,
@@ -34,10 +33,12 @@ func SendCallback(channelID, message, callbackURL string) error {
 
 	req, err := http.NewRequest("POST", callbackURL, bytes.NewReader(payload))
 	if err != nil {
-		logger.Error("callback request failed",
-			"channel", channelID,
-			"error", err.Error(),
-		)
+		if logger != nil {
+			logger.WithSource("plugin.webhook").Error("callback request failed",
+				"channel", channelID,
+				"error", err.Error(),
+			)
+		}
 		return fmt.Errorf("create callback request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -48,12 +49,14 @@ func SendCallback(channelID, message, callbackURL string) error {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.Error("callback network error",
-			"channel", channelID,
-			"error", err.Error(),
-		)
-		if log.GetGlobal().Level <= log.DebugLevel {
-			logger.Debug("callback payload", "channel", channelID, "message", message)
+		if logger != nil {
+			logger.WithSource("plugin.webhook").Error("callback network error",
+				"channel", channelID,
+				"error", err.Error(),
+			)
+			if logger.Level <= log.DebugLevel {
+				logger.WithSource("plugin.webhook").Debug("callback payload", "channel", channelID, "message", message)
+			}
 		}
 		return fmt.Errorf("callback network error: %w", err)
 	}
@@ -63,21 +66,25 @@ func SendCallback(channelID, message, callbackURL string) error {
 	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		logger.Error("callback failed",
-			"channel", channelID,
-			"status", fmt.Sprintf("%d", resp.StatusCode),
-		)
-		if log.GetGlobal().Level <= log.DebugLevel {
-			logger.Debug("callback response", "channel", channelID, "body", string(body))
-			logger.Debug("callback payload", "channel", channelID, "message", message)
+		if logger != nil {
+			logger.WithSource("plugin.webhook").Error("callback failed",
+				"channel", channelID,
+				"status", fmt.Sprintf("%d", resp.StatusCode),
+			)
+			if logger.Level <= log.DebugLevel {
+				logger.WithSource("plugin.webhook").Debug("callback response", "channel", channelID, "body", string(body))
+				logger.WithSource("plugin.webhook").Debug("callback payload", "channel", channelID, "message", message)
+			}
 		}
 		return fmt.Errorf("callback returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	logger.Info("response sent",
-		"channel", channelID,
-		"tokens", fmt.Sprintf("%d", len(message)/4),
-	)
+	if logger != nil {
+		logger.WithSource("plugin.webhook").Info("response sent",
+			"channel", channelID,
+			"tokens", fmt.Sprintf("%d", len(message)/4),
+		)
+	}
 
 	return nil
 }

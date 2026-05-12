@@ -26,14 +26,17 @@ type Queue struct {
 	items    []Message
 	maxDepth int
 	// depth tracks the number of pending messages per channel
-	depth map[string]int
+	depth  map[string]int
+	logger *log.Logger
 }
 
 // New creates a new Queue with the given per-channel max depth.
-func New(maxDepth int) *Queue {
+// logger may be nil (logging calls are no-ops).
+func New(maxDepth int, logger *log.Logger) *Queue {
 	return &Queue{
 		maxDepth: maxDepth,
 		depth:    make(map[string]int),
+		logger:   logger,
 	}
 }
 
@@ -46,11 +49,13 @@ func (q *Queue) Enqueue(msg Message) (string, error) {
 	msg.ArrivalTime = time.Now()
 
 	if q.depth[msg.ChannelID] >= q.maxDepth {
-		log.GetGlobal().Warn("queue full — message rejected",
-			"channel", msg.ChannelID,
-			"depth", fmt.Sprintf("%d", q.depth[msg.ChannelID]),
-			"max_depth", fmt.Sprintf("%d", q.maxDepth),
-		)
+		if q.logger != nil {
+			q.logger.Warn("queue full — message rejected",
+				"channel", msg.ChannelID,
+				"depth", fmt.Sprintf("%d", q.depth[msg.ChannelID]),
+				"max_depth", fmt.Sprintf("%d", q.maxDepth),
+			)
+		}
 		return rejectionMessage, nil
 	}
 

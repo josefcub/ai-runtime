@@ -275,7 +275,7 @@ func TestLevelString(t *testing.T) {
 
 	for i, level := range tests {
 		if got := level.String(); got != expected[i] {
-			t.Errorf("Level(%d).String() = %q, want %q", level, got, expected[i])
+			t.Errorf("Level(%d).String() = %q, want %q", i, got, expected[i])
 		}
 	}
 }
@@ -321,46 +321,4 @@ func TestLoggerAppendMode(t *testing.T) {
 	}
 }
 
-func TestGlobalLogger(t *testing.T) {
-	dir := t.TempDir()
 
-	l, err := New(dir, InfoLevel)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer l.Close()
-
-	// SetGlobal only takes effect once per process
-	// In tests we can't easily reset, so we verify GetGlobal returns non-nil
-	SetGlobal(l)
-
-	g := GetGlobal()
-	if g == nil {
-		t.Fatal("GetGlobal() returned nil")
-	}
-
-	// The global logger should write to our file
-	g.Info("global test message")
-
-	data, err := os.ReadFile(filepath.Join(dir, "harness.log"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-
-	if !strings.Contains(string(data), "global test message") {
-		t.Errorf("expected global log entry, got: %s", string(data))
-	}
-}
-
-func TestGetGlobalBeforeSetGlobal(t *testing.T) {
-	// GetGlobal before SetGlobal should return a no-op logger (not nil)
-	// This test assumes SetGlobal was already called in TestGlobalLogger
-	// If run in isolation, it should still not panic
-	g := GetGlobal()
-	if g == nil {
-		t.Fatal("GetGlobal() must never return nil")
-	}
-
-	// Writing to no-op logger should not panic
-	g.Info("safe no-op message")
-}

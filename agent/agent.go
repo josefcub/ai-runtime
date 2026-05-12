@@ -34,10 +34,12 @@ type Agent struct {
 	logToolCalls        bool
 	logAgentReasoning   bool
 	channelLogger       *channellog.Logger
+	logger              *log.Logger
 }
 
 // New creates a new Agent.
-func New(client ChatClient, reg *tools.Registry, maxToolIterations, contextTokens int, summarizeThreshold float64, summarizeKeepRecent, maxTokens int, summaryPrompt string, logToolCalls, logAgentReasoning bool, channelLogger *channellog.Logger) *Agent {
+// logger may be nil (logging calls are no-ops).
+func New(client ChatClient, reg *tools.Registry, maxToolIterations, contextTokens int, summarizeThreshold float64, summarizeKeepRecent, maxTokens int, summaryPrompt string, logToolCalls, logAgentReasoning bool, channelLogger *channellog.Logger, logger *log.Logger) *Agent {
 	return &Agent{
 		client:              client,
 		tools:               reg,
@@ -50,6 +52,7 @@ func New(client ChatClient, reg *tools.Registry, maxToolIterations, contextToken
 		logToolCalls:        logToolCalls,
 		logAgentReasoning:   logAgentReasoning,
 		channelLogger:       channelLogger,
+		logger:              logger,
 	}
 }
 
@@ -69,8 +72,7 @@ func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText,
 	// Log user message to channel log
 	_ = a.channelLogger.LogUser(sess.ChannelID, messageText)
 
-	logger := log.GetGlobal().WithSource("agent")
-
+	logger := a.logger
 	var output strings.Builder
 
 	for i := 0; i < a.maxToolIterations; i++ {
@@ -96,7 +98,9 @@ func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText,
 		// Call LLM
 		resp, err := a.client.Chat(ctx, messages, toolsJSON, a.maxTokens)
 		if err != nil {
-			logger.Error("LLM call failed", "error", err.Error())
+			if logger != nil {
+				logger.Error("LLM call failed", "error", err.Error())
+			}
 
 			// If we got a partial response, record it in the session so the
 			// content is not lost. Do not attempt tool execution.
@@ -121,7 +125,7 @@ func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText,
 
 		// Log and accumulate agent reasoning content
 		if resp.ReasoningContent != "" {
-			if a.logAgentReasoning {
+			if a.logAgentReasoning && logger != nil {
 				logger.Debug("agent reasoning", "content", resp.ReasoningContent)
 			}
 			output.WriteString("[Reasoning: " + resp.ReasoningContent + "]\n")
@@ -129,7 +133,7 @@ func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText,
 
 		// Log and accumulate agent text content
 		if resp.Content != "" {
-			if a.logAgentReasoning {
+			if a.logAgentReasoning && logger != nil {
 				logger.Debug("agent response", "content", resp.Content)
 			}
 			output.WriteString(resp.Content)
@@ -169,7 +173,7 @@ func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText,
 
 		// Execute each tool call
 		for _, tc := range resp.ToolCalls {
-			if a.logToolCalls {
+			if a.logToolCalls && logger != nil {
 				logger.Debug("tool call", "tool", tc.Function.Name, "id", tc.ID,
 					"arguments", tc.Function.Arguments)
 			}
@@ -178,13 +182,13 @@ func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText,
 
 			result, err := a.tools.Dispatch(tc.Function.Name, tc.Function.Arguments)
 			if err != nil {
-				if a.logToolCalls {
+				if a.logToolCalls && logger != nil {
 					logger.Warn("tool error", "tool", tc.Function.Name, "error", err.Error())
 				}
 				result = err.Error()
 			}
 
-			if a.logToolCalls {
+			if a.logToolCalls && logger != nil {
 				logger.Debug("tool result", "tool", tc.Function.Name, "result", result)
 			}
 
@@ -215,7 +219,9 @@ func (a *Agent) Process(ctx context.Context, sess *session.Session, messageText,
 	// closing message so session state is valid.
 	lastMsg := sess.LastMessage()
 	if lastMsg != nil && (lastMsg.Role == session.RoleTool || len(lastMsg.ToolCalls) > 0) {
-		logger.Warn("max tool iterations reached — appended synthetic closing message")
+		if logger != nil {
+			logger.Warn("max tool iterations reached — appended synthetic closing message")
+		}
 		sess.Messages = append(sess.Messages, session.ConversationMessage{
 			Role:    session.RoleAssistant,
 			Content: "I reached my tool call limit this turn. Would you like me to continue?",
@@ -247,13 +253,15 @@ func (a *Agent) summarizeIfNeeded(ctx context.Context, sess *session.Session, sy
 // summarizeContext compresses older messages in the session into a summary
 // to stay within the context window. The most recent messages are preserved.
 func (a *Agent) summarizeContext(ctx context.Context, sess *session.Session) error {
-	logger := log.GetGlobal().WithSource("agent")
+	logger := a.logger
 
 	// Log start
-	logger.Info("context summarization started",
-		"total_messages", fmt.Sprintf("%d", len(sess.Messages)),
-		"keep_recent", fmt.Sprintf("%d", a.summarizeKeepRecent),
-	)
+	if logger != nil {
+		logger.Info("context summarization started",
+			"total_messages", fmt.Sprintf("%d", len(sess.Messages)),
+			"keep_recent", fmt.Sprintf("%d", a.summarizeKeepRecent),
+		)
+	}
 	_ = a.channelLogger.Log(sess.ChannelID, channellog.Entry{
 		Role:    "system",
 		Action:  "tool",
@@ -265,7 +273,9 @@ func (a *Agent) summarizeContext(ctx context.Context, sess *session.Session) err
 	old, recent := splitMessages(sess.Messages, a.summarizeKeepRecent)
 
 	if len(old) == 0 {
-		logger.Info("context summarization skipped (no old messages to summarize)")
+		if logger != nil {
+			logger.Info("context summarization skipped (no old messages to summarize)")
+		}
 		return nil
 	}
 
@@ -283,7 +293,9 @@ func (a *Agent) summarizeContext(ctx context.Context, sess *session.Session) err
 	resp, err := a.client.Chat(ctx, summaryMessages, nil, a.maxTokens)
 	if err != nil {
 		errMsg := fmt.Sprintf("context summarization failed: %v", err)
-		logger.Error(errMsg)
+		if logger != nil {
+			logger.Error(errMsg)
+		}
 		_ = a.channelLogger.Log(sess.ChannelID, channellog.Entry{
 			Role:    "system",
 			Action:  "tool",
@@ -304,7 +316,9 @@ func (a *Agent) summarizeContext(ctx context.Context, sess *session.Session) err
 	}
 	if summaryText == "" {
 		errMsg := "context summarization failed: LLM returned empty summary"
-		logger.Error(errMsg)
+		if logger != nil {
+			logger.Error(errMsg)
+		}
 		_ = a.channelLogger.Log(sess.ChannelID, channellog.Entry{
 			Role:    "system",
 			Action:  "tool",
@@ -328,11 +342,13 @@ func (a *Agent) summarizeContext(ctx context.Context, sess *session.Session) err
 	sess.Messages = append(sess.Messages, recent...)
 
 	summaryTokens := len(summaryText) / 4
-	logger.Info("context summarization complete",
-		"old_messages", fmt.Sprintf("%d", len(old)),
-		"kept_messages", fmt.Sprintf("%d", len(recent)),
-		"summary_tokens", fmt.Sprintf("%d", summaryTokens),
-	)
+	if logger != nil {
+		logger.Info("context summarization complete",
+			"old_messages", fmt.Sprintf("%d", len(old)),
+			"kept_messages", fmt.Sprintf("%d", len(recent)),
+			"summary_tokens", fmt.Sprintf("%d", summaryTokens),
+		)
+	}
 	_ = a.channelLogger.Log(sess.ChannelID, channellog.Entry{
 		Role:    "system",
 		Action:  "tool",

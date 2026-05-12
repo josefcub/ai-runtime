@@ -20,7 +20,6 @@ import (
 	"github.com/agent-project/harness/agent"
 	"github.com/agent-project/harness/config"
 	"github.com/agent-project/harness/llm"
-	"github.com/agent-project/harness/log"
 	"github.com/agent-project/harness/queue"
 	"github.com/agent-project/harness/sandbox"
 	"github.com/agent-project/harness/session"
@@ -87,14 +86,6 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 		}
 	}
 
-	// Create logger
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatalf("create logger: %v", err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
 	// Resolve working dir
 	workingDir, err := sandbox.ResolveWorkingDir(filepath.Join(dir, "work"))
 	if err != nil {
@@ -103,25 +94,24 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 	_ = workingDir
 
 	// Create queue and sessions
-	q := queue.New(10)
+	q := queue.New(10, nil)
 	sessions := session.NewManager(filepath.Join(dir, "state"))
 
 	// Start webhook server
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ws := webhook.NewServer("127.0.0.1", 0, "/webhook", 1048576, q, sessions, true)
+	ws := webhook.NewServer("127.0.0.1", 0, "/webhook", 1048576, q, sessions, true, nil)
 
+	serverDone := make(chan struct{})
 	go func() {
+		defer close(serverDone)
 		_ = ws.Start(ctx)
 	}()
 
-	// Give server time to start
-	time.Sleep(100 * time.Millisecond)
-
-	// Cancel and test queue draining directly
+	// Cancel and wait for server goroutine to exit cleanly
 	cancel()
-	time.Sleep(200 * time.Millisecond)
+	<-serverDone
 
 	// Now test queue draining directly
 	sess := sessions.Get("test-channel")
@@ -262,14 +252,6 @@ func TestIntegration_FullMessageFlow(t *testing.T) {
 		}
 	}
 
-	// Setup logger
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatalf("create logger: %v", err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
 	// Resolve working dir
 	workingDir, err := sandbox.ResolveWorkingDir(filepath.Join(dir, "work"))
 	if err != nil {
@@ -308,14 +290,14 @@ func TestIntegration_FullMessageFlow(t *testing.T) {
 	defer mockLLM.Close()
 
 	// Setup components
-	q := queue.New(10)
+	q := queue.New(10, nil)
 	sessions := session.NewManager(filepath.Join(dir, "state"))
 	reg := tools.New(workingDir)
 	tools.RegisterFileTools(reg)
 
-	llmClient := llm.New(mockLLM.URL, "test-model", "", 5*time.Second, filepath.Join(dir, "logs"))
-	agt := agent.New(llmClient, reg, 3, 8192, 0.70, 10, 4096, "Summarize the above conversation.", true, true, nil)
-	wrk := worker.New(q, sessions, agt, "You are a test assistant.", workingDir)
+	llmClient := llm.New(mockLLM.URL, "test-model", "", 5*time.Second, filepath.Join(dir, "logs"), nil)
+	agt := agent.New(llmClient, reg, 3, 8192, 0.70, 10, 4096, "Summarize the above conversation.", true, true, nil, nil)
+	wrk := worker.New(q, sessions, agt, "You are a test assistant.", workingDir, nil)
 
 	// Enqueue a message
 	msg := queue.Message{
@@ -386,14 +368,7 @@ func TestIntegration_WebhookServer(t *testing.T) {
 		}
 	}
 
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatalf("create logger: %v", err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
-	q := queue.New(10)
+	q := queue.New(10, nil)
 	sessions := session.NewManager(filepath.Join(dir, "state"))
 
 	// Create test server
@@ -436,7 +411,7 @@ func TestIntegration_WebhookServer(t *testing.T) {
 
 	t.Run("backpressure rejection", func(t *testing.T) {
 		// Use a small queue
-		smallQ := queue.New(2)
+		smallQ := queue.New(2, nil)
 		smallQ.Enqueue(queue.Message{ChannelID: "ch", MessageText: "1"})
 		smallQ.Enqueue(queue.Message{ChannelID: "ch", MessageText: "2"})
 
@@ -534,14 +509,7 @@ func TestIntegration_SignalHandling(t *testing.T) {
 		}
 	}
 
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatalf("create logger: %v", err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
-	q := queue.New(10)
+	q := queue.New(10, nil)
 	sessions := session.NewManager(filepath.Join(dir, "state"))
 
 	// Create a session with data
@@ -609,13 +577,6 @@ func TestIntegration_MultiChannel(t *testing.T) {
 		}
 	}
 
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatalf("create logger: %v", err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
 	workingDir, err := sandbox.ResolveWorkingDir(filepath.Join(dir, "work"))
 	if err != nil {
 		t.Fatalf("resolve working dir: %v", err)
@@ -647,13 +608,13 @@ func TestIntegration_MultiChannel(t *testing.T) {
 	}))
 	defer llmServer.Close()
 
-	q := queue.New(10)
+	q := queue.New(10, nil)
 	sessions := session.NewManager(filepath.Join(dir, "state"))
 	reg := tools.New(workingDir)
 	tools.RegisterFileTools(reg)
-	llmClient := llm.New(llmServer.URL, "test", "", 5*time.Second, filepath.Join(dir, "logs"))
-	agt := agent.New(llmClient, reg, 3, 8192, 0.70, 10, 4096, "Summarize the above conversation.", false, false, nil)
-	wrk := worker.New(q, sessions, agt, "test prompt", workingDir)
+	llmClient := llm.New(llmServer.URL, "test", "", 5*time.Second, filepath.Join(dir, "logs"), nil)
+	agt := agent.New(llmClient, reg, 3, 8192, 0.70, 10, 4096, "Summarize the above conversation.", false, false, nil, nil)
+	wrk := worker.New(q, sessions, agt, "test prompt", workingDir, nil)
 
 	// Enqueue messages from different channels
 	channels := []string{"channel-a", "channel-b", "channel-c"}
@@ -703,17 +664,10 @@ func TestIntegration_Webhook503OnShutdown(t *testing.T) {
 		}
 	}
 
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
-	q := queue.New(10)
+	q := queue.New(10, nil)
 	sessions := session.NewManager(filepath.Join(dir, "state"))
 
-	ws := webhook.NewServer("127.0.0.1", 0, "/webhook", 1048576, q, sessions, false)
+	ws := webhook.NewServer("127.0.0.1", 0, "/webhook", 1048576, q, sessions, false, nil)
 
 	// Test that calling Stop() sets the shutting flag and returns nil
 	if err := ws.Stop(); err != nil {
@@ -736,13 +690,6 @@ func TestIntegration_AgentWithContextTrimming(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
 	workingDir, err := sandbox.ResolveWorkingDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -759,8 +706,8 @@ func TestIntegration_AgentWithContextTrimming(t *testing.T) {
 	}))
 	defer llmServer.Close()
 
-	llmClient := llm.New(llmServer.URL, "test", "", 5*time.Second, filepath.Join(dir, "logs"))
-	agt := agent.New(llmClient, reg, 3, 100, 0.90, 2, 4096, "Summarize the above conversation.", false, false, nil)
+	llmClient := llm.New(llmServer.URL, "test", "", 5*time.Second, filepath.Join(dir, "logs"), nil)
+	agt := agent.New(llmClient, reg, 3, 100, 0.90, 2, 4096, "Summarize the above conversation.", false, false, nil, nil)
 
 	// Create session with many messages to exceed context
 	sess := &session.Session{
@@ -802,15 +749,8 @@ func TestIntegration_CallbackFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
 	// Test callback to non-existent URL
-	err = webhook.SendCallback("test-channel", "test message", "http://localhost:59999/callback")
+	err := webhook.SendCallback("test-channel", "test message", "http://localhost:59999/callback", nil)
 	if err == nil {
 		t.Error("expected error for unreachable callback URL")
 	}
@@ -821,7 +761,7 @@ func TestIntegration_CallbackFailure(t *testing.T) {
 	}))
 	defer badServer.Close()
 
-	err = webhook.SendCallback("test-channel", "test message", badServer.URL)
+	err = webhook.SendCallback("test-channel", "test message", badServer.URL, nil)
 	if err == nil {
 		t.Error("expected error for 500 callback response")
 	}
@@ -832,7 +772,7 @@ func TestIntegration_CallbackFailure(t *testing.T) {
 	}))
 	defer goodServer.Close()
 
-	err = webhook.SendCallback("test-channel", "test message", goodServer.URL)
+	err = webhook.SendCallback("test-channel", "test message", goodServer.URL, nil)
 	if err != nil {
 		t.Errorf("unexpected error for successful callback: %v", err)
 	}
@@ -842,7 +782,7 @@ func TestIntegration_CallbackFailure(t *testing.T) {
 func TestIntegration_QueueFIFO(t *testing.T) {
 	t.Parallel()
 
-	q := queue.New(100)
+	q := queue.New(100, nil)
 
 	// Enqueue messages
 	for i := 0; i < 10; i++ {
@@ -876,13 +816,6 @@ func TestIntegration_SystemPromptNotInSession(t *testing.T) {
 
 	dir := t.TempDir()
 
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
 	workingDir, err := sandbox.ResolveWorkingDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -898,8 +831,8 @@ func TestIntegration_SystemPromptNotInSession(t *testing.T) {
 	}))
 	defer llmServer.Close()
 
-	llmClient := llm.New(llmServer.URL, "test", "", 5*time.Second, filepath.Join(dir, "logs"))
-	agt := agent.New(llmClient, reg, 3, 8192, 0.70, 10, 4096, "Summarize the above conversation.", false, false, nil)
+	llmClient := llm.New(llmServer.URL, "test", "", 5*time.Second, filepath.Join(dir, "logs"), nil)
+	agt := agent.New(llmClient, reg, 3, 8192, 0.70, 10, 4096, "Summarize the above conversation.", false, false, nil, nil)
 
 	sessMgr := session.NewManager(filepath.Join(dir, "state"))
 	sess := sessMgr.Get("prompt-test")
@@ -945,13 +878,6 @@ func TestIntegration_GracefulShutdownSignal(t *testing.T) {
 		}
 	}
 
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
 	// Setup all components as main.go would
 	workingDir, err := sandbox.ResolveWorkingDir(filepath.Join(dir, "work"))
 	if err != nil {
@@ -959,7 +885,7 @@ func TestIntegration_GracefulShutdownSignal(t *testing.T) {
 	}
 	_ = workingDir
 
-	q := queue.New(10)
+	q := queue.New(10, nil)
 	sessions := session.NewManager(filepath.Join(dir, "state"))
 
 	// Pre-populate a session
@@ -1024,14 +950,7 @@ func TestIntegration_ConcurrentWebhookRequests(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
-	q := queue.New(100)
+	q := queue.New(100, nil)
 	sessions := session.NewManager(filepath.Join(dir, "state"))
 
 	// Simulate concurrent webhook handler behavior
@@ -1104,13 +1023,6 @@ func TestIntegration_EndToEndNoCallback(t *testing.T) {
 		}
 	}
 
-	logger, err := log.New(filepath.Join(dir, "logs"), log.DebugLevel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer logger.Close()
-	log.SetGlobal(logger)
-
 	workingDir, err := sandbox.ResolveWorkingDir(filepath.Join(dir, "work"))
 	if err != nil {
 		t.Fatal(err)
@@ -1123,13 +1035,13 @@ func TestIntegration_EndToEndNoCallback(t *testing.T) {
 	}))
 	defer llmServer.Close()
 
-	q := queue.New(10)
+	q := queue.New(10, nil)
 	sessions := session.NewManager(filepath.Join(dir, "state"))
 	reg := tools.New(workingDir)
 	tools.RegisterFileTools(reg)
-	llmClient := llm.New(llmServer.URL, "test", "", 5*time.Second, filepath.Join(dir, "logs"))
-	agt := agent.New(llmClient, reg, 3, 8192, 0.70, 10, 4096, "Summarize the above conversation.", false, false, nil)
-	wrk := worker.New(q, sessions, agt, "test prompt", workingDir)
+	llmClient := llm.New(llmServer.URL, "test", "", 5*time.Second, filepath.Join(dir, "logs"), nil)
+	agt := agent.New(llmClient, reg, 3, 8192, 0.70, 10, 4096, "Summarize the above conversation.", false, false, nil, nil)
+	wrk := worker.New(q, sessions, agt, "test prompt", workingDir, nil)
 
 	// Enqueue without callback URL
 	q.Enqueue(queue.Message{

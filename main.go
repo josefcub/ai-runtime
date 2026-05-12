@@ -46,8 +46,6 @@ func main() {
 	}
 	defer logger.Close()
 
-	log.SetGlobal(logger)
-
 	// 3. Resolve working directory for sandbox
 	workingDir, err := sandbox.ResolveWorkingDir(cfg.Paths.WorkingDir)
 	if err != nil {
@@ -57,7 +55,7 @@ func main() {
 	}
 
 	// 4. Create message queue
-	q := queue.New(cfg.Queue.MaxDepth)
+	q := queue.New(cfg.Queue.MaxDepth, logger.WithSource("queue"))
 
 	// 5. Create session manager and load existing sessions
 	sessions := session.NewManager(cfg.Paths.StateDir)
@@ -73,7 +71,7 @@ func main() {
 	tools.RegisterBashTools(reg, cfg.Bash.Enabled, cfg.Bash.Timeout, cfg.Bash.MaxOutput, cfg.Bash.Banned)
 
 	// 7. Create LLM client
-	llmClient := llm.New(cfg.LLM.Endpoint, cfg.LLM.Model, cfg.LLM.APIKey, cfg.LLM.Timeout, cfg.Paths.LogDir)
+	llmClient := llm.New(cfg.LLM.Endpoint, cfg.LLM.Model, cfg.LLM.APIKey, cfg.LLM.Timeout, cfg.Paths.LogDir, logger.WithSource("llm"))
 
 	// 8. Create channel conversation logger
 	channelLogger := channellog.New(cfg.Paths.ChannelLogDir)
@@ -91,6 +89,7 @@ func main() {
 		cfg.Logging.LogToolCalls,
 		cfg.Logging.LogAgentReasoning,
 		channelLogger,
+		logger.WithSource("agent"),
 	)
 
 	// 10. Create webhook server
@@ -102,10 +101,11 @@ func main() {
 		q,
 		sessions,
 		cfg.Logging.LogChannelEvents,
+		logger.WithSource("plugin.webhook"),
 	)
 
 	// 11. Create worker
-	wrk := worker.New(q, sessions, agt, cfg.LLM.SystemPrompt, workingDir)
+	wrk := worker.New(q, sessions, agt, cfg.LLM.SystemPrompt, workingDir, logger.WithSource("worker"))
 
 	// 12. Create cancellable context for shutdown
 	ctx, cancel := context.WithCancel(context.Background())

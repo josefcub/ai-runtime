@@ -13,7 +13,7 @@ import (
 )
 
 func TestEnqueueDequeue_FIFO(t *testing.T) {
-	q := New(64)
+	q := New(64, nil)
 
 	for i := 0; i < 5; i++ {
 		msg := Message{ChannelID: "ch1", MessageText: "msg"}
@@ -44,7 +44,7 @@ func TestEnqueueDequeue_FIFO(t *testing.T) {
 }
 
 func TestEnqueueDequeue_MultiChannel(t *testing.T) {
-	q := New(64)
+	q := New(64, nil)
 
 	// Interleave two channels
 	_, _ = q.Enqueue(Message{ChannelID: "a", MessageText: "a1"})
@@ -68,7 +68,7 @@ func TestEnqueueDequeue_MultiChannel(t *testing.T) {
 }
 
 func TestBackpressure(t *testing.T) {
-	q := New(2)
+	q := New(2, nil)
 
 	_, _ = q.Enqueue(Message{ChannelID: "ch1", MessageText: "1"})
 	_, _ = q.Enqueue(Message{ChannelID: "ch1", MessageText: "2"})
@@ -94,7 +94,7 @@ func TestBackpressure(t *testing.T) {
 }
 
 func TestDepth(t *testing.T) {
-	q := New(64)
+	q := New(64, nil)
 
 	_, _ = q.Enqueue(Message{ChannelID: "a", MessageText: "1"})
 	_, _ = q.Enqueue(Message{ChannelID: "a", MessageText: "2"})
@@ -117,7 +117,7 @@ func TestDepth(t *testing.T) {
 }
 
 func TestArrivalTime(t *testing.T) {
-	q := New(64)
+	q := New(64, nil)
 
 	_, _ = q.Enqueue(Message{ChannelID: "ch1", MessageText: "first"})
 	time.Sleep(10 * time.Millisecond)
@@ -132,7 +132,7 @@ func TestArrivalTime(t *testing.T) {
 }
 
 func TestPending(t *testing.T) {
-	q := New(64)
+	q := New(64, nil)
 
 	_, _ = q.Enqueue(Message{ChannelID: "a", MessageText: "1"})
 	_, _ = q.Enqueue(Message{ChannelID: "b", MessageText: "2"})
@@ -150,7 +150,7 @@ func TestPending(t *testing.T) {
 }
 
 func TestClear(t *testing.T) {
-	q := New(64)
+	q := New(64, nil)
 
 	_, _ = q.Enqueue(Message{ChannelID: "a", MessageText: "1"})
 	_, _ = q.Enqueue(Message{ChannelID: "b", MessageText: "2"})
@@ -166,7 +166,7 @@ func TestClear(t *testing.T) {
 }
 
 func TestEmptyDequeue(t *testing.T) {
-	q := New(64)
+	q := New(64, nil)
 	_, ok := q.Dequeue()
 	if ok {
 		t.Fatal("expected false on empty dequeue")
@@ -174,7 +174,7 @@ func TestEmptyDequeue(t *testing.T) {
 }
 
 func TestConcurrentEnqueueDequeue(t *testing.T) {
-	q := New(1000)
+	q := New(1000, nil)
 
 	var wg sync.WaitGroup
 
@@ -225,7 +225,7 @@ func TestConcurrentEnqueueDequeue(t *testing.T) {
 }
 
 func TestRejectionMessageExact(t *testing.T) {
-	q := New(1)
+	q := New(1, nil)
 	_, _ = q.Enqueue(Message{ChannelID: "x", MessageText: "1"})
 	rej, _ := q.Enqueue(Message{ChannelID: "x", MessageText: "2"})
 
@@ -248,9 +248,8 @@ func TestRejectionLogsWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer logger.Close()
-	log.SetGlobal(logger)
 
-	q := New(1)
+	q := New(1, logger)
 	_, _ = q.Enqueue(Message{ChannelID: "warn:ch", MessageText: "1"})
 	// This should trigger a warn log
 	_, _ = q.Enqueue(Message{ChannelID: "warn:ch", MessageText: "2"})
@@ -274,7 +273,7 @@ func TestRejectionLogsWarning(t *testing.T) {
 }
 
 func TestCallbackURLPreserved(t *testing.T) {
-	q := New(64)
+	q := New(64, nil)
 
 	url := "http://example.com/callback"
 	_, _ = q.Enqueue(Message{
@@ -296,7 +295,7 @@ func TestQueueLoopTimeout(t *testing.T) {
 	// Ensure the test doesn't hang indefinitely.
 	done := make(chan struct{})
 	go func() {
-		q := New(100)
+		q := New(100, nil)
 		for i := 0; i < 10000; i++ {
 			_, _ = q.Enqueue(Message{ChannelID: "ch", MessageText: "x"})
 			q.Dequeue()
@@ -313,7 +312,7 @@ func TestQueueLoopTimeout(t *testing.T) {
 }
 
 func TestRejectionPreservesOrder(t *testing.T) {
-	q := New(2)
+	q := New(2, nil)
 
 	_, _ = q.Enqueue(Message{ChannelID: "a", MessageText: "a1"})
 	_, _ = q.Enqueue(Message{ChannelID: "a", MessageText: "a2"})
@@ -346,7 +345,7 @@ func TestRejectionPreservesOrder(t *testing.T) {
 }
 
 func TestPendingContainsAllFields(t *testing.T) {
-	q := New(64)
+	q := New(64, nil)
 
 	_, _ = q.Enqueue(Message{
 		ChannelID:   "ch1",
