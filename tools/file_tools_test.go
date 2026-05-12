@@ -361,7 +361,7 @@ func TestGrep_SymlinkNoFollow(t *testing.T) {
 	// Create a file outside the sandbox
 	outside := filepath.Join(filepath.Dir(dir), "outside-"+filepath.Base(dir))
 	os.MkdirAll(outside, 0755)
-	defer os.RemoveAll(outside)
+	t.Cleanup(func() { os.RemoveAll(outside) })
 	os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("sensitive data\n"), 0644)
 
 	// Create a symlink inside the sandbox pointing outside

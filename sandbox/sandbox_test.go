@@ -154,7 +154,7 @@ func TestResolvePath_SymlinkEscape(t *testing.T) {
 	if err := os.Mkdir(outside, 0755); err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(outside)
+	t.Cleanup(func() { os.RemoveAll(outside) })
 
 	// Create symlink inside working dir pointing outside
 	linkPath := filepath.Join(wd, "evil_link")
@@ -183,10 +183,10 @@ func TestResolvePath_PrefixWithSeparator(t *testing.T) {
 	if err := os.Mkdir(other, 0755); err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
+	t.Cleanup(func() {
 		os.RemoveAll(wd)
 		os.RemoveAll(other)
-	}()
+	})
 
 	// Symlink from wd to other directory
 	linkPath := filepath.Join(wd, "prefix_link")

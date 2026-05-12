@@ -241,13 +241,13 @@ func TestRejectionLogsWarning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(tmpDir)
+	t.Cleanup(func() { os.RemoveAll(tmpDir) })
 
 	logger, err := log.New(tmpDir, log.DebugLevel)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer logger.Close()
+	t.Cleanup(func() { logger.Close() })
 
 	q := New(1, logger)
 	_, _ = q.Enqueue(Message{ChannelID: "warn:ch", MessageText: "1"})
