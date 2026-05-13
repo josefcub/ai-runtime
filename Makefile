@@ -6,7 +6,7 @@ BIN := ./bin
 all: build client
 
 build:
-	cd $(SRC) && go build -o ../$(BIN)/harness .
+	cd $(SRC) && go build -o ../$(BIN)/runtime .
 
 client:
 	cd $(SRC) && go build -o ../$(BIN)/client ./cmd/client
@@ -29,4 +29,4 @@ race:
 	cd $(SRC) && go test -race ./...
 
 clean:
-	rm -f $(BIN)/harness && rm -f $(BIN)/client && cd $(SRC) && go clean . && go clean ./cmd/client && go clean -cache 
+	rm -f $(BIN)/runtime && rm -f $(BIN)/client && cd $(SRC) && go clean . && go clean ./cmd/client && go clean -cache 
