@@ -16,7 +16,7 @@ The Agent Harness is a minimal autonomous agent system written in Go (stdlib onl
 - Per-channel conversation logging (`channellog`)
 - Sandboxed filesystem tools (path-traversal blocked)
 - OpenAI-compatible LLM API with SSE streaming
-- CLI client for local testing (`client/client.go`)
+- CLI client for local testing (`src/cmd/client/client.go`)
 
 ---
 
@@ -37,7 +37,7 @@ File tools are sandboxed to `paths.working_dir`. `sandbox.ResolvePath()` blocks 
 
 The `bash` tool is gated by `bash.enabled` in the INI (not registered if false). When enabled, it bypasses the sandbox — mitigated by a configurable command denylist (only checks the **first token** of the command, not piped/redirected commands), hard timeout, no stdin, and output truncation.
 
-**Source**: `sandbox/sandbox.go:36` `ResolvePath()`
+**Source**: `src/sandbox/sandbox.go` `ResolvePath()`
 
 ---
 
@@ -61,9 +61,9 @@ Each channel gets a `<state_dir>/<channel_id>.json` file.
 
 - **Atomic writes**: write to `.tmp` file, then `os.Rename()` to final path
 - **System prompt**: NOT stored in session — composed at request time from the INI `llm.system_prompt` plus any workspace markdown files found in `paths.working_dir` (`AGENTS.md`, `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`). Each file is wrapped with `--- FILENAME ---` delimiters.
-- **Context summarization**: when total estimated tokens (characters/4) exceed `context_tokens × summarize_threshold` (threshold is a fraction, e.g. `0.8` = 80%), the oldest messages (excluding the last `summarize_keep_recent`) are compressed into a single assistant message via a dedicated LLM call. The summary is stored in `reasoning_content` prefixed with `"[Summary of prior conversation]\n"`. The summary prompt is embedded at compile time from `session/summary.md`. Summarization failures are fatal.
+- **Context summarization**: when total estimated tokens (characters/4) exceed `context_tokens × summarize_threshold` (threshold is a fraction, e.g. `0.8` = 80%), the oldest messages (excluding the last `summarize_keep_recent`) are compressed into a single assistant message via a dedicated LLM call. The summary is stored in `reasoning_content` prefixed with `"[Summary of prior conversation]\n"`. The summary prompt is embedded at compile time from `src/session/summary.md`. Summarization failures are fatal.
 
-**Source**: `session/session.go`, `worker/worker.go:59-77` `buildSystemPrompt()`
+**Source**: `src/session/session.go`, `src/worker/worker.go` `buildSystemPrompt()`
 
 ---
 
@@ -79,7 +79,7 @@ Each channel gets a `<state_dir>/<channel_id>.json` file.
 
 The `channellog` package writes per-channel conversation logs to `paths.channel_log_dir`. User messages, assistant responses, tool calls, and system events (e.g. summarization) are logged separately. Enabled via `logging.log_channel_events`.
 
-**Source**: `channellog/channellog.go`
+**Source**: `src/channellog/channellog.go`
 
 ---
 
@@ -93,25 +93,25 @@ On `SIGTERM` or `SIGINT`, the harness performs a 5-step shutdown:
 4. **Flush sessions** — all in-memory sessions are atomically written to disk
 5. **Clear queue** — resets pending counters
 
-**Source**: `main.go:137-180`
+**Source**: `src/main.go` (graceful shutdown section)
 
 ---
 
 ## 8. CLI Client
 
-A standalone CLI client (`client/client.go`) sends messages to the harness webhook. By default it spins up a local callback server and waits for the response. Options:
+A standalone CLI client (`src/cmd/client/client.go`) sends messages to the harness webhook. By default it spins up a local callback server and waits for the response. Options:
 - `-nc` — fire-and-forget (no callback)
 - `-cb <url>` — use an external callback URL
 - `-n <channel>` — set the channel ID (default: `cli`)
 - `-t` — show reasoning and tool calls in output
 
-**Source**: `client/client.go`
+**Source**: `src/cmd/client/client.go`
 
 ---
 
 ## 9. Webhook Input Validation
 
-The webhook handler (`webhook/server.go`) validates all inbound requests:
+The webhook handler (`src/webhook/server.go`) validates all inbound requests:
 
 | Check | Status Code | Response |
 |---|---|---|
@@ -126,4 +126,4 @@ The webhook handler (`webhook/server.go`) validates all inbound requests:
 
 **Config**: `server.max_body_bytes` (optional, default `1048576` = 1MB). Applied via `http.MaxBytesReader`.
 
-**Source**: `webhook/server.go:83-138` `handleWebhook()`
+**Source**: `src/webhook/server.go` `handleWebhook()`
