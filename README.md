@@ -82,7 +82,4 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-**Agents Welcome** 🦞 See [CONTRIBUTING.md](CONTRIBUTING.md). for more information.
-
----
 *Under active development. Expect weirdness.*
