@@ -113,6 +113,9 @@ func (m *MockClient) Chat(ctx context.Context, messages []llm.Message, toolsJSON
 	m.q = m.q[1:]
 
 	if item.isPartial {
+		if item.err != nil {
+			return item.resp, item.err
+		}
 		return item.resp, fmt.Errorf("partial response")
 	}
 

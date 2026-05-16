@@ -3,6 +3,7 @@ package mockllm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -230,6 +231,29 @@ func TestMockClient_LastMessagesIsCopy(t *testing.T) {
 	}
 	if len(overcap) != 2 {
 		t.Fatalf("over-cap append itself failed: len %d != 2", len(overcap))
+	}
+}
+
+func TestMockClient_ContextCancelBlocks(t *testing.T) {
+	mc := NewMockClient()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mc.Chat(ctx, nil, nil, 0)
+		done <- err
+	}()
+
+	// Wait for context deadline to expire
+	time.Sleep(100 * time.Millisecond)
+
+	// Wake the blocked goroutine so it checks ctx.Err()
+	mc.cond.Broadcast()
+
+	err := <-done
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected context.DeadlineExceeded, got %v", err)
 	}
 }
 

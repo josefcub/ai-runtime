@@ -6,20 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"strconv"
 	"sync"
 	"testing"
 )
-
-// ToolCall represents a tool invocation from the LLM.
-type ToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
 
 // MockToolCall is a tool call configured on the mock server.
 type MockToolCall struct {
@@ -53,6 +43,7 @@ func New(t *testing.T) (s *Server, baseURL string) {
 	s = &Server{t: t}
 	srv := httptest.NewServer(http.HandlerFunc(s.handle))
 	s.srv = srv
+	t.Cleanup(s.Close)
 	return s, srv.URL
 }
 
@@ -213,18 +204,6 @@ func writeSSE(w http.ResponseWriter, chunks []string) {
 			flusher.Flush()
 		}
 	}
-	flushSSE(w, flusher)
-}
-
-func flushSSE(w http.ResponseWriter, flusher http.Flusher) {
-	// No-op for writeSSE — it should not write a trailing empty data line
-}
-
-func flushSSEBody(w http.ResponseWriter, flusher http.Flusher, body string) {
-	fmt.Fprint(w, "data: "+body+"\n\n")
-	if flusher != nil {
-		flusher.Flush()
-	}
 }
 
 func streamText(w http.ResponseWriter, text, reasoning string) {
@@ -262,8 +241,7 @@ func streamText(w http.ResponseWriter, text, reasoning string) {
 		}
 	}
 
-	deltaText(w, flusher, `{"choices":[{"finish_reason":"stop"}]}`)
-	flushSSE(w, flusher)
+	deltaText(w, flusher, `{"choices":[{"delta":{},"finish_reason":"stop"}]}`)
 }
 
 func deltaText(w http.ResponseWriter, flusher http.Flusher, jsonStr string) {
@@ -293,12 +271,14 @@ func streamToolCalls(w http.ResponseWriter, tools []MockToolCall) {
 		}
 
 		if tc.Args != "" {
-			deltaJSON(w, flusher, fmt.Sprintf(`{"choices":[{"delta":{"tool_calls":[{"index":%d,"function":{"arguments":"%s"}}]}}]}`, i, escapeJSON(tc.Args)))
+			runes := []rune(tc.Args)
+			for _, ch := range runes {
+				deltaJSON(w, flusher, fmt.Sprintf(`{"choices":[{"delta":{"tool_calls":[{"index":%d,"function":{"arguments":"%s"}}]}}]}`, i, escapeJSON(string(ch))))
+			}
 		}
 	}
 
 	deltaJSON(w, flusher, `{"choices":[{"delta":{},"finish_reason":"stop"}]}`)
-	flushSSE(w, flusher)
 }
 
 func deltaJSON(w http.ResponseWriter, flusher http.Flusher, jsonStr string) {
@@ -309,27 +289,7 @@ func deltaJSON(w http.ResponseWriter, flusher http.Flusher, jsonStr string) {
 }
 
 func escapeJSON(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `"`, `\"`)
-	s = strings.ReplaceAll(s, "\n", `\n`)
-	s = strings.ReplaceAll(s, "\r", `\r`)
-	s = strings.ReplaceAll(s, "\t", `\t`)
-	return s
+	q := strconv.Quote(s)
+	return q[1 : len(q)-1]
 }
 
-func parseSSE(raw []byte) []string {
-	var chunks []string
-	for _, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "data: ") {
-			chunks = append(chunks, strings.TrimPrefix(line, "data: "))
-		}
-	}
-	return chunks
-}
-
-func toMap(data string) map[string]interface{} {
-	var m map[string]interface{}
-	json.Unmarshal([]byte(data), &m)
-	return m
-}
