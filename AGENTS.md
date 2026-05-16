@@ -127,3 +127,76 @@ The webhook handler (`src/webhook/server.go`) validates all inbound requests:
 **Config**: `server.max_body_bytes` (optional, default `1048576` = 1MB). Applied via `http.MaxBytesReader`.
 
 **Source**: `src/webhook/server.go` `handleWebhook()`
+
+---
+
+## 10. Mock LLM Fixture
+
+`src/testutil/mockllm/` provides two mock LLM implementations for testing the harness at different levels. Zero external dependencies, uses only stdlib + `github.com/agent-project/harness/llm`.
+
+### When to use MockClient
+
+Test the `agent` package or any code that embeds `ChatClient` as a dependency. Not for HTTP/webhook/worker tests.
+
+```go
+mc := mockllm.NewMockClient()
+mc.QueueResp(&llm.ChatResponse{Content: "answer"})
+mc.QueueError(fmt.Errorf("network error"))
+mc.QueuePartial(&llm.ChatResponse{Content: "partial"}, fmt.Errorf("partial response"))
+
+resp, err := mc.Chat(ctx, messages, tools, maxTokens)
+```
+
+### When to use Server
+
+Test the full harness pipeline (webhook → queue → worker → agent → tools → session → callback). Configures the harness's `llm.endpoint` to point to the mock server URL.
+
+```go
+s, baseURL := mockllm.New(t)
+defer s.Close()
+
+s.SetResponseText("Hello world", "")
+s.SetResponseToolCalls([]mockllm.MockToolCall{
+    {ID: "call_1", Name: "view", Args: `{"path":"foo.md"}`},
+})
+```
+
+### MockClient usage
+
+```go
+mc := mockllm.NewMockClient()
+mc.QueueResp(&llm.ChatResponse{Content: "answer"})
+
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+resp, err := mc.Chat(ctx, messages, tools, maxTokens)
+
+// Metrics
+mc.CallCount()
+mc.LastMessages()
+mc.LastTools()
+mc.LastMaxTokens()
+```
+
+### Server usage
+
+```go
+s, baseURL := mockllm.New(t)
+defer s.Close()
+
+// Set the harness config to point to baseURL
+config.LLM.Endpoint = baseURL
+
+// Start harness, send webhook, receive callback
+```
+
+### Key gotchas
+
+- `MockClient.Chat()` blocks until a response is queued. Always queue at least one response before calling. Use `context.WithTimeout` to prevent hangs.
+- `LastMessages()` returns a copy. You can't mutate internal state.
+- The `Server` must be created before the harness starts. The harness config must point `llm.endpoint` to the server URL.
+- Tool call SSE format matches OpenAI exactly: `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_0","type":"function"}]}}]}`. Tool IDs are generated as `"call_%d"` if not set on `MockToolCall`.
+
+### Existing e2e test patterns
+
+See `src/main_test.go` for integration test examples using mock LLM servers. `TestIntegration_FullMessageFlow` shows the pattern: create mock LLM server → start webhook → enqueue → wait for callback.
