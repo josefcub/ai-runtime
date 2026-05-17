@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -401,8 +400,6 @@ func TestWorker_ConcurrentSafety(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	var processed atomic.Int32
-	origProcess := proc
 	// Wrap processor to count
 	countingProc := &mockProcessor{response: "ok", done: make(chan struct{}, 10)}
 	w.processor = countingProc
@@ -429,11 +426,10 @@ func TestWorker_ConcurrentSafety(t *testing.T) {
 	<-done
 
 	calls := countingProc.GetCalls()
-	_ = processed // tracked by calls
+	_ = calls // tracked by calls
 	if len(calls) < 10 {
 		t.Errorf("expected 10 calls, got %d (may vary due to timing)", len(calls))
 	}
-	_ = origProcess // used to verify original processor wasn't modified
 }
 
 func TestBuildSystemPrompt_NoFiles(t *testing.T) {
