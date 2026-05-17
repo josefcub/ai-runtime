@@ -20,3 +20,5 @@ bin
 lib
 UAT
 pyvenv.cfg
+test-output/
+*.cover.out

@@ -1,7 +1,11 @@
 SRC := ./src
 BIN := ./bin
 
-.PHONY: all build client test vet fmt race clean
+Package := ./...
+
+_RUN_TEST = mkdir -p test-output && cd $(SRC) && go test -v -count=1 -run=$(Test) $(Package) -coverprofile=../test-output/single-$(Test).cover.out
+
+.PHONY: all build client test vet fmt race clean test-one coverage-one
 
 all: build client
 
@@ -30,3 +34,10 @@ race:
 
 clean:
 	rm -f $(BIN)/runtime && rm -f $(BIN)/client && cd $(SRC) && go clean . && go clean ./cmd/client && go clean -cache 
+
+test-one:
+	${_RUN_TEST}
+
+coverage-one:
+	${_RUN_TEST}
+	cd $(SRC) && go run ./cmd/tools/coverage/ ../test-output/single-$(Test).cover.out . $(Package)
