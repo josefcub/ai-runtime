@@ -80,6 +80,12 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
+// HandleFunc returns the handler function for the webhook endpoint,
+// so test code outside the package can register it on a custom mux.
+func (s *Server) HandleFunc() http.HandlerFunc {
+	return s.handleWebhook
+}
+
 // Stop gracefully shuts down the HTTP server.
 func (s *Server) Stop() error {
 	s.shutting.Store(true)

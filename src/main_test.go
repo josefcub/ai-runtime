@@ -23,6 +23,7 @@ import (
 	"github.com/agent-project/harness/queue"
 	"github.com/agent-project/harness/sandbox"
 	"github.com/agent-project/harness/session"
+	"github.com/agent-project/harness/testutil/mockllm"
 	"github.com/agent-project/harness/tools"
 	"github.com/agent-project/harness/webhook"
 	"github.com/agent-project/harness/worker"
@@ -241,7 +242,7 @@ func TestIntegration_SessionPersistence(t *testing.T) {
 }
 
 // TestIntegration_FullMessageFlow tests the complete flow:
-// POST webhook → enqueue → dequeue → process → callback
+// POST /webhook → enqueue → dequeue → process → callback
 func TestIntegration_FullMessageFlow(t *testing.T) {
 	t.Parallel()
 
@@ -252,71 +253,56 @@ func TestIntegration_FullMessageFlow(t *testing.T) {
 		}
 	}
 
-	// Resolve working dir
 	workingDir, err := sandbox.ResolveWorkingDir(filepath.Join(dir, "work"))
 	if err != nil {
 		t.Fatalf("resolve working dir: %v", err)
 	}
 
-	// Create callback server to receive responses
+	// Callback server — receives result from worker after processing
 	var callbackReceived atomic.Bool
-	var callbackMsg string
+	var cbChannel, cbMessage string
+	var cbMu sync.Mutex
 	callbackServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload webhook.CallbackPayload
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Errorf("decode callback: %v", err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		callbackMsg = payload.Message
+		cbMu.Lock()
+		cbChannel = payload.Channel
+		cbMessage = payload.Message
+		cbMu.Unlock()
 		callbackReceived.Store(true)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer callbackServer.Close()
 
-	// Create mock LLM server
-	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return a simple response with no tool calls
-		chunks := []string{
-			`data: {"choices":[{"delta":{"content":"Hello "},"finish_reason":null}]}`,
-			`data: {"choices":[{"delta":{"content":"world"},"finish_reason":"stop"}]}`,
-			`data: [DONE]`,
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		for _, chunk := range chunks {
-			fmt.Fprintln(w, chunk)
-		}
-	}))
-	defer mockLLM.Close()
+	// Mock LLM — returns text response via SSE stream
+	mockServer, mockURL := mockllm.New(t)
+	mockServer.SetResponseText("Hello world", "")
 
-	// Setup components
+	// Queue + session manager (no file-based config needed)
 	q := queue.New(10, nil)
 	sessions := session.NewManager(filepath.Join(dir, "state"))
+	logDir := filepath.Join(dir, "logs")
+
+	// Full agent + worker pipeline
 	reg := tools.New(workingDir)
 	tools.RegisterFileTools(reg)
-
-	llmClient := llm.New(mockLLM.URL, "test-model", "", 5*time.Second, filepath.Join(dir, "logs"), nil)
+	llmClient := llm.New(mockURL, "test-model", "", 5*time.Second, logDir, nil)
 	agt := agent.New(llmClient, reg, 3, 8192, 0.70, 10, 4096, "Summarize the above conversation.", true, true, nil, nil)
 	wrk := worker.New(q, sessions, agt, "You are a test assistant.", workingDir, nil)
 
-	// Enqueue a message
-	msg := queue.Message{
-		ChannelID:   "test-channel",
-		MessageText: "say hello",
-		CallbackURL: callbackServer.URL,
-	}
-	if _, err := q.Enqueue(msg); err != nil {
-		t.Fatalf("enqueue: %v", err)
-	}
+	// Webhook HTTP server — wraps handleWebhook as the real HTTP handler
+	webhookSrv := webhook.NewServer("127.0.0.1", 0, "/webhook", 1048576, q, sessions, true, nil)
+	h := http.NewServeMux()
+	h.HandleFunc("/webhook", webhookSrv.HandleFunc())
+	webhookHTTP := httptest.NewServer(h)
+	defer webhookHTTP.Close()
 
-	if q.Len() != 1 {
-		t.Fatalf("expected 1 queued message, got %d", q.Len())
-	}
-
-	// Start worker with a timeout context
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// Run worker loop in background (dequeues, calls LLM, sends callback)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -324,35 +310,80 @@ func TestIntegration_FullMessageFlow(t *testing.T) {
 		wrk.Run(ctx)
 	}()
 
-	// Wait for worker to finish or timeout
-	wg.Wait()
-
-	// Verify callback was received
-	if !callbackReceived.Load() {
-		t.Fatal("callback was not received")
+	// --- HTTP POST to the webhook endpoint (not manual enqueue) ---
+	payload := fmt.Sprintf(`{"channel":"test-channel","message":"say hello","callback_url":"%s"}`, callbackServer.URL)
+	resp, err := http.Post(webhookHTTP.URL+"/webhook", "application/json", bytes.NewReader([]byte(payload)))
+	if err != nil {
+		t.Fatalf("POST /webhook: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("/webhook status = %d, want %d", resp.StatusCode, http.StatusAccepted)
 	}
 
-	// Verify the callback message contains the LLM response
-	if !strings.Contains(callbackMsg, "Hello world") {
-		t.Errorf("callback message should contain 'Hello world', got: %q", callbackMsg)
+	// --- Verify callback delivery ---
+	deadline := time.After(5 * time.Second)
+	for !callbackReceived.Load() {
+		select {
+		case <-deadline:
+			cbMu.Lock()
+			cbChan, cbMsg := cbChannel, cbMessage
+			cbMu.Unlock()
+			t.Fatalf("callback never received — channel=%q message=%q", cbChan, cbMsg)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 
-	// Verify session was saved
+	cbMu.Lock()
+	receivedChannel := cbChannel
+	receivedMessage := cbMessage
+	cbMu.Unlock()
+
+	if receivedChannel != "test-channel" {
+		t.Errorf("callback channel = %q, want %q", receivedChannel, "test-channel")
+	}
+	if receivedMessage == "" {
+		t.Error("callback message is empty")
+	} else if !strings.Contains(receivedMessage, "Hello world") {
+		t.Errorf("callback message should contain 'Hello world', got: %q", receivedMessage)
+	}
+
+	// --- Verify session persisted with correct messages ---
 	sess := sessions.Get("test-channel")
 	if len(sess.Messages) < 2 {
-		t.Errorf("expected at least 2 messages in session, got %d", len(sess.Messages))
+		t.Errorf("session has %d messages, expected at least 2: %+v", len(sess.Messages), sess.Messages)
 	}
 
-	// Verify the user message is in the session
+	// Check user message is present (webhook prefixes with "[timestamp] [#channel] ")
 	found := false
 	for _, m := range sess.Messages {
-		if m.Role == session.RoleUser && m.Content == "say hello" {
+		if m.Role == session.RoleUser && strings.HasSuffix(m.Content, "say hello") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("user message not found in session")
+		for _, m := range sess.Messages {
+			t.Logf("session message role=%s content=%q", m.Role, m.Content)
+		}
+		t.Error("user message 'say hello' not found in session")
+	}
+
+	// Check assistant response is present
+	found = false
+	for _, m := range sess.Messages {
+		if m.Role == session.RoleAssistant && m.Content == "Hello world" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		for _, m := range sess.Messages {
+			if m.Role == session.RoleAssistant {
+				t.Logf("assistant message: %q", m.Content)
+			}
+		}
+		t.Error("assistant response 'Hello world' not found in session")
 	}
 }
 
