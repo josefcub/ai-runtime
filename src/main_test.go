@@ -23,6 +23,7 @@ import (
 	"github.com/agent-project/harness/queue"
 	"github.com/agent-project/harness/sandbox"
 	"github.com/agent-project/harness/session"
+	"github.com/agent-project/harness/testutil/mockllm"
 	"github.com/agent-project/harness/tools"
 	"github.com/agent-project/harness/webhook"
 	"github.com/agent-project/harness/worker"
@@ -274,20 +275,9 @@ func TestIntegration_FullMessageFlow(t *testing.T) {
 	}))
 	defer callbackServer.Close()
 
-	// Create mock LLM server
-	mockLLM := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return a simple response with no tool calls
-		chunks := []string{
-			`data: {"choices":[{"delta":{"content":"Hello "},"finish_reason":null}]}`,
-			`data: {"choices":[{"delta":{"content":"world"},"finish_reason":"stop"}]}`,
-			`data: [DONE]`,
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		for _, chunk := range chunks {
-			fmt.Fprintln(w, chunk)
-		}
-	}))
-	defer mockLLM.Close()
+	// Setup mock client for the agent
+	mc := mockllm.NewMockClient()
+	mc.QueueResp(&llm.ChatResponse{Content: "Hello world"})
 
 	// Setup components
 	q := queue.New(10, nil)
@@ -295,8 +285,7 @@ func TestIntegration_FullMessageFlow(t *testing.T) {
 	reg := tools.New(workingDir)
 	tools.RegisterFileTools(reg)
 
-	llmClient := llm.New(mockLLM.URL, "test-model", "", 5*time.Second, filepath.Join(dir, "logs"), nil)
-	agt := agent.New(llmClient, reg, 3, 8192, 0.70, 10, 4096, "Summarize the above conversation.", true, true, nil, nil)
+	agt := agent.New(mc, reg, 3, 8192, 0.70, 10, 4096, "Summarize the above conversation.", true, true, nil, nil)
 	wrk := worker.New(q, sessions, agt, "You are a test assistant.", workingDir, nil)
 
 	// Enqueue a message
